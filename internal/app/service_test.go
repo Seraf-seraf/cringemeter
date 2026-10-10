@@ -14,6 +14,10 @@ import (
 )
 
 type fakeTelegram struct {
+	edits              []domain.Post
+	counts             []domain.Counts
+	answers            int
+	editErr, answerErr error
 	mu                 sync.Mutex
 	copies, deletes    int
 	copyErr, deleteErr error
@@ -158,5 +162,74 @@ func TestExpiredClaimDoesNotCopy(t *testing.T) {
 	p, _ = store.Post(ctx, p.ID)
 	if p.State != domain.CopyUnknown || tg.copies != 0 || tg.deletes != 0 {
 		t.Fatal(p, tg)
+	}
+}
+
+func (f *fakeTelegram) Answer(context.Context, string, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers++
+	return f.answerErr
+}
+func (f *fakeTelegram) Edit(_ context.Context, p domain.Post, c domain.Counts) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, p)
+	f.counts = append(f.counts, c)
+	return f.editErr
+}
+
+func TestCommonVoteChangesRatherThanAdds(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	if err := s.Publish(ctx, input(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Publish(ctx, input(2)); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []domain.Ballot{
+		{CallbackID: "a", PostID: 1, ChatID: -100, MessageID: 101, UserID: 42, Vote: 1},
+		{CallbackID: "a", PostID: 1, ChatID: -100, MessageID: 101, UserID: 42, Vote: 1},
+		{CallbackID: "b", PostID: 2, ChatID: -100, MessageID: 102, UserID: 42, Vote: 0},
+	} {
+		if err := s.RecordVote(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, _ := store.Post(ctx, 1)
+	counts, _ := store.Counts(ctx, p.MediaID)
+	if counts.Cringe != 0 || counts.NonCringe != 1 || tg.answers != 3 || tg.counts[len(tg.counts)-1] != counts {
+		t.Fatal(counts, tg)
+	}
+}
+
+func TestVoteSurvivesTelegramFailuresAndRejectsForgedPost(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	s.Publish(ctx, input(1))
+	tg.answerErr = errors.New("answer failed")
+	tg.editErr = errors.New("edit failed")
+	b := domain.Ballot{CallbackID: "a", PostID: 1, ChatID: -100, MessageID: 101, UserID: 42, Vote: 1}
+	if err := s.RecordVote(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := store.Post(ctx, 1)
+	counts, _ := store.Counts(ctx, p.MediaID)
+	if counts.Cringe != 1 {
+		t.Fatal(counts)
+	}
+	n := len(tg.edits)
+	b.PostID = 99
+	s.RecordVote(ctx, b)
+	b.PostID = 1
+	b.MessageID = 999
+	s.RecordVote(ctx, b)
+	if len(tg.edits) != n {
+		t.Fatal("forged post was edited")
+	}
+	counts, _ = store.Counts(ctx, p.MediaID)
+	if counts.Total() != 1 {
+		t.Fatal(counts)
 	}
 }

@@ -52,3 +52,12 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string { return "external API request failed" }
+
+type Ballot struct {
+	CallbackID string
+	PostID     int64
+	ChatID     int64
+	MessageID  int
+	UserID     int64
+	Vote       int
+}

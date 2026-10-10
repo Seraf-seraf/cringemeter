@@ -122,3 +122,30 @@ func Incoming(m *tg.Message) (domain.Incoming, bool) {
 	}
 	return in, in.UniqueID != ""
 }
+
+func (c *Client) Answer(ctx context.Context, id, text string) error {
+	return c.Call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
+}
+
+func (c *Client) Edit(ctx context.Context, p domain.Post, counts domain.Counts) error {
+	return c.Call(ctx, "editMessageReplyMarkup", map[string]any{"chat_id": p.ChatID, "message_id": p.BotMessageID, "reply_markup": Keyboard(p.ID, counts)}, nil)
+}
+
+func Ballot(q *tg.CallbackQuery) (domain.Ballot, bool) {
+	if q == nil || q.Message == nil || q.Message.Chat == nil || q.From == nil || q.ID == "" || len(q.Data) > 64 {
+		return domain.Ballot{}, false
+	}
+	parts := strings.Split(q.Data, ":")
+	if len(parts) != 3 || parts[0] != "v" || (parts[2] != "0" && parts[2] != "1") {
+		return domain.Ballot{}, false
+	}
+	postID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || postID <= 0 || strconv.FormatInt(postID, 10) != parts[1] {
+		return domain.Ballot{}, false
+	}
+	vote := 0
+	if parts[2] == "1" {
+		vote = 1
+	}
+	return domain.Ballot{CallbackID: q.ID, PostID: postID, ChatID: q.Message.Chat.ID, MessageID: q.Message.MessageID, UserID: q.From.ID, Vote: vote}, true
+}

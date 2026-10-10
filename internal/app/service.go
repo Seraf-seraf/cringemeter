@@ -17,11 +17,14 @@ type Repository interface {
 	CopyResult(context.Context, int64, int, string, int64) error
 	Deleted(context.Context, int64, int64) error
 	Counts(context.Context, int64) (domain.Counts, error)
+	Vote(context.Context, int64, int64, int, int64, int, int64) (int64, error)
 }
 
 type Messenger interface {
 	Copy(context.Context, domain.Post, domain.Counts) (int, error)
 	Delete(context.Context, int64, int) error
+	Answer(context.Context, string, string) error
+	Edit(context.Context, domain.Post, domain.Counts) error
 }
 
 type Service struct {
@@ -88,4 +91,34 @@ func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
 		return s.Store.Deleted(ctx, p.ID, s.Now().Unix())
 	}
 	return nil
+}
+
+func (s *Service) RecordVote(ctx context.Context, b domain.Ballot) error {
+	mediaID, err := s.Store.Vote(ctx, b.PostID, b.ChatID, b.MessageID, b.UserID, b.Vote, s.Now().Unix())
+	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrInvalid) {
+		s.answer(ctx, b.CallbackID, "Кнопка недоступна")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s.answer(ctx, b.CallbackID, "Голос учтён")
+	counts, err := s.Store.Counts(ctx, mediaID)
+	if err != nil {
+		return err
+	}
+	p := domain.Post{ID: b.PostID, MediaID: mediaID, ChatID: b.ChatID, BotMessageID: b.MessageID}
+	if err := s.Telegram.Edit(ctx, p, counts); err != nil {
+		var apiErr *domain.APIError
+		if !errors.As(err, &apiErr) || !apiErr.NotModified {
+			slog.WarnContext(ctx, "keyboard update deferred", "post_id", p.ID, "phase", "edit", "code", "edit_failed")
+		}
+	}
+	return nil
+}
+
+func (s *Service) answer(ctx context.Context, id, text string) {
+	if err := s.Telegram.Answer(ctx, id, text); err != nil {
+		slog.WarnContext(ctx, "callback answer failed", "phase", "answer", "code", "answer_failed")
+	}
 }
