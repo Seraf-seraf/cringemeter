@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/WillowWorks-io/libsql-client-go/libsql"
 	"handler/internal/domain"
@@ -42,12 +43,42 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if version == 1 {
 		return s.Check(ctx)
 	}
-	// One request runs the migration with explicit SQL transaction boundaries.
-	_, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys=ON; BEGIN IMMEDIATE; "+initialSchema+" PRAGMA user_version=1; COMMIT;")
+	// Keep all statements on one remote stream, with explicit SQL boundaries.
+	conn, err := s.DB.Conn(ctx)
 	if err != nil {
-		migrationFailure(ctx, "schema_execute", err)
 		return err
 	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		migrationFailure(ctx, "foreign_keys_enable", err)
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		migrationFailure(ctx, "begin", err)
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancel()
+			conn.ExecContext(cleanup, "ROLLBACK")
+		}
+	}()
+	statements := append(strings.Split(initialSchema, ";"), "PRAGMA user_version=1", "COMMIT")
+	for i, statement := range statements {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err = conn.ExecContext(ctx, statement); err != nil {
+			migrationFailure(ctx, "schema_statement", err)
+			slog.ErrorContext(ctx, "migration statement failed", "phase", "schema_statement", "statement_index", i)
+			return err
+		}
+	}
+	committed = true
+	// Release the reserved connection before Check, also with a one-connection pool.
+	conn.Close()
 	return s.Check(ctx)
 }
 
@@ -55,7 +86,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 func migrationFailure(ctx context.Context, phase string, err error) {
 	code := "database_failed"
 	for _, candidate := range []string{"SQLITE_AUTH", "SQLITE_READONLY", "SQLITE_BUSY", "SQLITE_ERROR", "syntax error", "failed to parse", "not authorized", "unsupported"} {
-		if strings.Contains(err.Error(), candidate) {
+		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(candidate)) {
 			code = candidate
 			break
 		}
