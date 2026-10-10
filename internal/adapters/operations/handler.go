@@ -51,6 +51,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.Close()
+	report := map[string]any{"ok": true, "action": input.Action}
 	switch input.Action {
 	case "migrate":
 		err = s.Migrate(ctx)
@@ -59,13 +60,18 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "probe":
 		var one int
 		err = s.DB.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+		if err == nil {
+			var enabled int
+			err = s.DB.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled)
+			report["foreign_keys_enabled"] = enabled == 1
+		}
 	}
 	if err != nil {
 		failure(ctx, w, input.Action)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": input.Action})
+	json.NewEncoder(w).Encode(report)
 }
 func failure(ctx context.Context, w http.ResponseWriter, phase string) {
 	slog.ErrorContext(ctx, "database operation failed", "phase", phase, "code", "database_failed")
