@@ -178,7 +178,7 @@ func (s *Store) Copies(ctx context.Context, mediaID, afterID int64, limit int) (
 }
 
 func (s *Store) Top(ctx context.Context, chatID int64, minVotes, limit int) ([]domain.Rank, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT v.media_id,COALESCE((SELECT bot_message_id FROM posts p WHERE p.media_id=v.media_id AND p.chat_id=? AND p.state IN ('copied','done') AND p.bot_message_id IS NOT NULL ORDER BY p.id DESC LIMIT 1),0),SUM(v.vote),COUNT(*)-SUM(v.vote) FROM votes v GROUP BY v.media_id HAVING COUNT(*)>=? ORDER BY 1.0*SUM(v.vote)/COUNT(*) DESC,COUNT(*) DESC,v.media_id ASC LIMIT ?`, chatID, minVotes, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT v.media_id,COALESCE((SELECT bot_message_id FROM posts p WHERE p.media_id=v.media_id AND p.chat_id=? AND p.state IN ('copied','done') AND p.bot_message_id IS NOT NULL ORDER BY p.id DESC LIMIT 1),0),SUM(v.vote),COUNT(*)-SUM(v.vote) FROM votes v WHERE EXISTS(SELECT 1 FROM posts p WHERE p.media_id=v.media_id AND p.chat_id=?) GROUP BY v.media_id HAVING COUNT(*)>=? ORDER BY 1.0*SUM(v.vote)/COUNT(*) DESC,COUNT(*) DESC,v.media_id ASC LIMIT ?`, chatID, chatID, minVotes, limit)
 	if err != nil {
 		return nil, err
 	}

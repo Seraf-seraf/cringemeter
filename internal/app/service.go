@@ -130,6 +130,9 @@ func (s *Service) answer(ctx context.Context, id, text string) {
 }
 
 func (s *Service) sync(ctx context.Context, current domain.Post) {
+	if current.BotMessageID <= 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, SyncTimeout)
 	defer cancel()
 	counts, err := s.Store.Counts(ctx, current.MediaID)

@@ -340,3 +340,31 @@ func TestRankingShowsUniqueFiles(t *testing.T) {
 		t.Fatal("dead links kept", tg.ranks)
 	}
 }
+
+type failedCopyStore struct{ Repository }
+
+func (s failedCopyStore) CopyResult(context.Context, int64, int, string, int64) error {
+	return errors.New("database response lost")
+}
+
+func TestDatabaseFailureAfterCopyPreservesSource(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	s.Store = failedCopyStore{store}
+	if err := s.Publish(ctx, input(1)); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	p, _ := store.Post(ctx, 1)
+	if p.State != domain.Copying || tg.copies != 1 || tg.deletes != 0 {
+		t.Fatal(p, tg)
+	}
+	s.Store = store
+	s.Now = func() time.Time { return time.Unix(100, 0) }
+	if err := s.Publish(ctx, input(1)); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = store.Post(ctx, 1)
+	if p.State != domain.CopyUnknown || tg.copies != 1 || tg.deletes != 0 {
+		t.Fatal(p, tg)
+	}
+}

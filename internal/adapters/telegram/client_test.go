@@ -134,3 +134,18 @@ func TestCallbackContract(t *testing.T) {
 		}
 	}
 }
+
+func TestTopCommand(t *testing.T) {
+	for _, tc := range []struct {
+		text, address string
+		ok            bool
+	}{
+		{"/top", "", true}, {"/top@Cringebot", "Cringebot", true}, {"/topology", "", false}, {"/top@", "", false}, {"hello /top", "", false}, {"/top@a@b", "", false},
+	} {
+		m := &tg.Message{Text: tc.text, Entities: []tg.MessageEntity{{Type: "bot_command", Offset: 0, Length: len(tc.text)}}}
+		address, ok := TopCommand(m)
+		if ok != tc.ok || address != tc.address {
+			t.Fatal(tc, address, ok)
+		}
+	}
+}
