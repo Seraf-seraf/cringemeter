@@ -42,3 +42,13 @@ type Rank struct {
 	MessageID int
 	Counts    Counts
 }
+
+type APIError struct {
+	Code        int
+	RetryAfter  int
+	Confirmed   bool
+	MessageGone bool
+	NotModified bool
+}
+
+func (e *APIError) Error() string { return "external API request failed" }
