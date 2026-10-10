@@ -9,6 +9,9 @@ import (
 )
 
 const ClaimDurationSeconds int64 = 30
+const MaxSyncCopies = 10
+const SyncTimeout = 2 * time.Second
+const EditTimeout = 700 * time.Millisecond
 
 type Repository interface {
 	Register(context.Context, domain.Incoming) (domain.Post, error)
@@ -18,6 +21,7 @@ type Repository interface {
 	Deleted(context.Context, int64, int64) error
 	Counts(context.Context, int64) (domain.Counts, error)
 	Vote(context.Context, int64, int64, int, int64, int, int64) (int64, error)
+	Copies(context.Context, int64, int64, int) ([]domain.Post, error)
 }
 
 type Messenger interface {
@@ -88,7 +92,13 @@ func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
 				return err
 			}
 		}
-		return s.Store.Deleted(ctx, p.ID, s.Now().Unix())
+		if err := s.Store.Deleted(ctx, p.ID, s.Now().Unix()); err != nil {
+			return err
+		}
+		p.State = domain.Done
+	}
+	if p.State == domain.Done {
+		s.sync(ctx, p)
 	}
 	return nil
 }
@@ -103,17 +113,8 @@ func (s *Service) RecordVote(ctx context.Context, b domain.Ballot) error {
 		return err
 	}
 	s.answer(ctx, b.CallbackID, "Голос учтён")
-	counts, err := s.Store.Counts(ctx, mediaID)
-	if err != nil {
-		return err
-	}
 	p := domain.Post{ID: b.PostID, MediaID: mediaID, ChatID: b.ChatID, BotMessageID: b.MessageID}
-	if err := s.Telegram.Edit(ctx, p, counts); err != nil {
-		var apiErr *domain.APIError
-		if !errors.As(err, &apiErr) || !apiErr.NotModified {
-			slog.WarnContext(ctx, "keyboard update deferred", "post_id", p.ID, "phase", "edit", "code", "edit_failed")
-		}
-	}
+	s.sync(ctx, p)
 	return nil
 }
 
@@ -121,4 +122,56 @@ func (s *Service) answer(ctx context.Context, id, text string) {
 	if err := s.Telegram.Answer(ctx, id, text); err != nil {
 		slog.WarnContext(ctx, "callback answer failed", "phase", "answer", "code", "answer_failed")
 	}
+}
+
+func (s *Service) sync(ctx context.Context, current domain.Post) {
+	ctx, cancel := context.WithTimeout(ctx, SyncTimeout)
+	defer cancel()
+	counts, err := s.Store.Counts(ctx, current.MediaID)
+	if err != nil {
+		slog.WarnContext(ctx, "keyboard update deferred", "post_id", current.ID, "phase", "counts", "code", "counts_failed")
+		return
+	}
+	if !s.edit(ctx, current, counts) {
+		return
+	}
+	posts, err := s.Store.Copies(ctx, current.MediaID, 0, MaxSyncCopies)
+	if err != nil {
+		slog.WarnContext(ctx, "keyboard update deferred", "post_id", current.ID, "phase", "copies", "code", "copies_failed")
+		return
+	}
+	attempts := 1
+	for _, p := range posts {
+		if p.ID == current.ID {
+			continue
+		}
+		if attempts >= MaxSyncCopies || ctx.Err() != nil {
+			return
+		}
+		attempts++
+		if !s.edit(ctx, p, counts) {
+			return
+		}
+	}
+}
+
+func (s *Service) edit(ctx context.Context, p domain.Post, counts domain.Counts) bool {
+	editCtx, cancel := context.WithTimeout(ctx, EditTimeout)
+	defer cancel()
+	err := s.Telegram.Edit(editCtx, p, counts)
+	if err == nil {
+		return true
+	}
+	var apiErr *domain.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.NotModified {
+			return true
+		}
+		if apiErr.Code == 429 {
+			slog.WarnContext(ctx, "keyboard sync rate limited", "post_id", p.ID, "phase", "edit", "code", "rate_limited", "retry_after_seconds", apiErr.RetryAfter)
+			return false
+		}
+	}
+	slog.WarnContext(ctx, "keyboard update deferred", "post_id", p.ID, "phase", "edit", "code", "edit_failed")
+	return ctx.Err() == nil
 }

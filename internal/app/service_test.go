@@ -233,3 +233,69 @@ func TestVoteSurvivesTelegramFailuresAndRejectsForgedPost(t *testing.T) {
 		t.Fatal(counts)
 	}
 }
+
+func TestSynchronizesCopiesAndRecoversAfter429(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	s.Publish(ctx, input(1))
+	s.Publish(ctx, input(2))
+	tg.edits = nil
+	tg.counts = nil
+	b := domain.Ballot{CallbackID: "a", PostID: 1, ChatID: -100, MessageID: 101, UserID: 42, Vote: 1}
+	tg.editErr = &domain.APIError{Code: 429, RetryAfter: 30, Confirmed: true}
+	if err := s.RecordVote(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if len(tg.edits) != 1 {
+		t.Fatal("requests continued after429", tg.edits)
+	}
+	p, _ := store.Post(ctx, 1)
+	counts, _ := store.Counts(ctx, p.MediaID)
+	if counts.Cringe != 1 {
+		t.Fatal(counts)
+	}
+	tg.editErr = nil
+	tg.edits = nil
+	tg.counts = nil
+	if err := s.RecordVote(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if len(tg.edits) != 2 || tg.edits[0].ID != 1 || tg.edits[1].ID != 2 || tg.counts[0] != counts || tg.counts[1] != counts {
+		t.Fatal(tg.edits, tg.counts)
+	}
+	tg.editErr = errors.New("one or more copies unavailable")
+	tg.edits = nil
+	if err := s.RecordVote(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if len(tg.edits) != 2 {
+		t.Fatal("partial error stopped unrelated copy", tg.edits)
+	}
+}
+
+func TestSynchronizationBoundsWork(t *testing.T) {
+	for _, n := range []int{MaxSyncCopies - 1, MaxSyncCopies, MaxSyncCopies + 1} {
+		t.Run(string(rune('a'+n)), func(t *testing.T) {
+			s, _, tg := setup(t)
+			ctx := context.Background()
+			for i := 1; i <= n; i++ {
+				if err := s.Publish(ctx, input(i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tg.edits = nil
+			tg.counts = nil
+			b := domain.Ballot{CallbackID: "a", PostID: int64(n), ChatID: -100, MessageID: 100 + n, UserID: 42, Vote: 1}
+			if err := s.RecordVote(ctx, b); err != nil {
+				t.Fatal(err)
+			}
+			want := n
+			if want > MaxSyncCopies {
+				want = MaxSyncCopies
+			}
+			if len(tg.edits) != want || tg.edits[0].ID != int64(n) {
+				t.Fatal(len(tg.edits), want, tg.edits)
+			}
+		})
+	}
+}
