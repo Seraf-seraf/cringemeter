@@ -43,16 +43,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if version == 1 {
 		return s.Check(ctx)
 	}
-	// Keep all statements on one remote stream, with explicit SQL boundaries.
+	if _, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		migrationFailure(ctx, "foreign_keys_enable", err)
+		return err
+	}
+	// A non-transactional remote query closes its stream. BEGIN must be the
+	// first operation on the reserved connection so subsequent DDL shares it.
 	conn, err := s.DB.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if _, err = conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
-		migrationFailure(ctx, "foreign_keys_enable", err)
-		return err
-	}
 	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		migrationFailure(ctx, "begin", err)
 		return err
@@ -85,7 +86,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 // Only allowlisted categories leave the adapter; driver errors may contain URLs.
 func migrationFailure(ctx context.Context, phase string, err error) {
 	code := "database_failed"
-	for _, candidate := range []string{"SQLITE_AUTH", "SQLITE_READONLY", "SQLITE_BUSY", "SQLITE_ERROR", "syntax error", "failed to parse", "not authorized", "unsupported"} {
+	for _, candidate := range []string{"SQLITE_AUTH", "SQLITE_READONLY", "SQLITE_BUSY", "SQLITE_ERROR", "syntax error", "failed to parse", "not authorized", "unsupported", "not supported", "not allowed", "transaction", "pragma", "closed", "permission"} {
 		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(candidate)) {
 			code = candidate
 			break
