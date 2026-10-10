@@ -17,6 +17,21 @@ import (
 //go:embed migrations/001_initial.sql
 var initialSchema string
 
+// Each trigger is one SQL statement even though its body contains semicolons.
+//
+//go:embed migrations/002_user_ranking.sql
+var rankingSchema string
+
+func schemaObjects() map[string]string {
+	names := []string{"media", "posts", "votes", "idx_posts_media_id", "author_votes", "score_positions", "user_scores", "rank_vote_insert", "rank_vote_update", "rank_post_insert", "legacy_vote_insert", "legacy_vote_update"}
+	definitions := append(strings.Split(strings.TrimSpace(initialSchema), ";")[:4], strings.Split(strings.TrimSpace(rankingSchema), "\n-- statement\n")...)
+	objects := make(map[string]string, len(names))
+	for i, name := range names {
+		objects[name] = definitions[i]
+	}
+	return objects
+}
+
 type Store struct{ DB *sql.DB }
 
 var errMigrationRequired = errors.New("schema migration required")
@@ -63,7 +78,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 			conn.ExecContext(cleanup, "ROLLBACK")
 		}
 	}()
-	statements := append(strings.Split(initialSchema, ";"), "COMMIT")
+	ranking := strings.Split(rankingSchema, "\n-- statement\n")
+	statements := append(strings.Split(initialSchema, ";"), ranking[:3]...)
+	// The user requested resetting legacy shared votes. Keep media and authors.
+	// New author_votes are never cleared, including recovery of a missing trigger.
+	statements = append(statements, "DELETE FROM votes")
+	statements = append(statements, `INSERT INTO score_positions(chat_id,user_id,score)
+ SELECT s.chat_id,s.user_id,s.score FROM user_scores s WHERE true
+ ORDER BY s.chat_id,s.user_id ON CONFLICT(chat_id,user_id) DO NOTHING`)
+	statements = append(statements, ranking[3:]...)
+	statements = append(statements, "COMMIT")
+
 	for i, statement := range statements {
 		if strings.TrimSpace(statement) == "" {
 			continue
@@ -93,15 +118,9 @@ func migrationFailure(ctx context.Context, phase string, err error) {
 }
 
 func (s *Store) Check(ctx context.Context) error {
-	// Turso forbids writing user_version. Validate the actual schema instead of
-	// adding a fourth bookkeeping table or assuming CREATE IF NOT EXISTS is enough.
-	names := []string{"media", "posts", "votes", "idx_posts_media_id"}
-	definitions := strings.Split(initialSchema, ";")
-	expected := make(map[string]string, len(names))
-	for i, name := range names {
-		expected[name] = normalizeSchema(definitions[i])
-	}
-	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE (type='table' AND name IN ('media','posts','votes')) OR (type='index' AND name='idx_posts_media_id')`)
+	// Turso forbids writing user_version: validate the actual objects.
+	expected := schemaObjects()
+	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update')`)
 	if err != nil {
 		return err
 	}
@@ -112,7 +131,7 @@ func (s *Store) Check(ctx context.Context) error {
 			objects.Close()
 			return err
 		}
-		if expected[name] != normalizeSchema(definition) {
+		if normalizeSchema(expected[name]) != normalizeSchema(definition) {
 			objects.Close()
 			return errors.New("unsupported schema definition")
 		}
@@ -123,7 +142,7 @@ func (s *Store) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if found != len(names) {
+	if found != len(expected) {
 		return errMigrationRequired
 	}
 	rows, err := s.DB.QueryContext(ctx, "PRAGMA foreign_key_check")
@@ -155,16 +174,18 @@ func normalizeSchema(sql string) string {
 	sql = normalized.String()
 	sql = strings.Replace(sql, "createtableifnotexists", "createtable", 1)
 	sql = strings.Replace(sql, "createindexifnotexists", "createindex", 1)
+	sql = strings.Replace(sql, "createviewifnotexists", "createview", 1)
+	sql = strings.Replace(sql, "createtriggerifnotexists", "createtrigger", 1)
 	return strings.TrimSuffix(sql, ";")
 }
 
-const postColumns = "id,media_id,chat_id,source_message_id,COALESCE(bot_message_id,0),state"
+const postColumns = "id,media_id,chat_id,source_message_id,COALESCE(bot_message_id,0),state,COALESCE(uploader_user_id,0)"
 
 type scanner interface{ Scan(...any) error }
 
 func scanPost(row scanner) (domain.Post, error) {
 	var p domain.Post
-	err := row.Scan(&p.ID, &p.MediaID, &p.ChatID, &p.SourceMessageID, &p.BotMessageID, &p.State)
+	err := row.Scan(&p.ID, &p.MediaID, &p.ChatID, &p.SourceMessageID, &p.BotMessageID, &p.State, &p.UploaderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, domain.ErrNotFound
 	}
@@ -238,21 +259,21 @@ func (s *Store) Vote(ctx context.Context, postID, chatID int64, messageID int, u
 		return 0, domain.ErrInvalid
 	}
 	var mediaID int64
-	err := s.DB.QueryRowContext(ctx, `INSERT INTO votes(media_id,user_id,vote,updated_at) SELECT media_id,?,?,? FROM posts WHERE id=? AND chat_id=? AND bot_message_id=? AND state IN ('copied','done') ON CONFLICT(media_id,user_id) DO UPDATE SET vote=excluded.vote,updated_at=excluded.updated_at RETURNING media_id`, userID, vote, now, postID, chatID, messageID).Scan(&mediaID)
+	err := s.DB.QueryRowContext(ctx, `INSERT INTO author_votes(media_id,uploader_user_id,user_id,vote,updated_at) SELECT media_id,COALESCE(uploader_user_id,0),?,?,? FROM posts WHERE id=? AND chat_id=? AND bot_message_id=? AND state IN ('copied','done') ON CONFLICT(media_id,uploader_user_id,user_id) DO UPDATE SET vote=excluded.vote,updated_at=excluded.updated_at RETURNING media_id`, userID, vote, now, postID, chatID, messageID).Scan(&mediaID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, domain.ErrNotFound
 	}
 	return mediaID, err
 }
 
-func (s *Store) Counts(ctx context.Context, mediaID int64) (domain.Counts, error) {
+func (s *Store) Counts(ctx context.Context, postID int64) (domain.Counts, error) {
 	var c domain.Counts
-	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(vote),0),COUNT(*)-COALESCE(SUM(vote),0) FROM votes WHERE media_id=?`, mediaID).Scan(&c.Cringe, &c.NonCringe)
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(vote),0),COUNT(*)-COALESCE(SUM(vote),0) FROM author_votes v JOIN posts p ON p.media_id=v.media_id AND COALESCE(p.uploader_user_id,0)=v.uploader_user_id WHERE p.id=?`, postID).Scan(&c.Cringe, &c.NonCringe)
 	return c, err
 }
 
-func (s *Store) Copies(ctx context.Context, mediaID, afterID int64, limit int) ([]domain.Post, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT "+postColumns+" FROM posts WHERE media_id=? AND id>? AND bot_message_id IS NOT NULL AND state IN ('copied','done') ORDER BY id LIMIT ?", mediaID, afterID, limit)
+func (s *Store) Copies(ctx context.Context, postID, afterID int64, limit int) ([]domain.Post, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT "+postColumns+" FROM posts WHERE media_id=(SELECT media_id FROM posts WHERE id=?) AND COALESCE(uploader_user_id,0)=(SELECT COALESCE(uploader_user_id,0) FROM posts WHERE id=?) AND id>? AND bot_message_id IS NOT NULL AND state IN ('copied','done') ORDER BY id LIMIT ?", postID, postID, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -268,8 +289,10 @@ func (s *Store) Copies(ctx context.Context, mediaID, afterID int64, limit int) (
 	return posts, rows.Err()
 }
 
-func (s *Store) Top(ctx context.Context, chatID int64, minVotes, limit int) ([]domain.Rank, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT v.media_id,COALESCE((SELECT bot_message_id FROM posts p WHERE p.media_id=v.media_id AND p.chat_id=? AND p.state IN ('copied','done') AND p.bot_message_id IS NOT NULL ORDER BY p.id DESC LIMIT 1),0),SUM(v.vote),COUNT(*)-SUM(v.vote) FROM votes v WHERE EXISTS(SELECT 1 FROM posts p WHERE p.media_id=v.media_id AND p.chat_id=?) GROUP BY v.media_id HAVING COUNT(*)>=? ORDER BY 1.0*SUM(v.vote)/COUNT(*) DESC,COUNT(*) DESC,v.media_id ASC LIMIT ?`, chatID, chatID, minVotes, limit)
+func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT s.user_id,s.score FROM user_scores s
+ JOIN score_positions r ON r.chat_id=s.chat_id AND r.user_id=s.user_id AND r.score=s.score
+ WHERE s.chat_id=? AND s.score>0 ORDER BY s.score DESC,r.id ASC LIMIT 3`, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +300,7 @@ func (s *Store) Top(ctx context.Context, chatID int64, minVotes, limit int) ([]d
 	var ranks []domain.Rank
 	for rows.Next() {
 		var r domain.Rank
-		if err := rows.Scan(&r.MediaID, &r.MessageID, &r.Counts.Cringe, &r.Counts.NonCringe); err != nil {
+		if err := rows.Scan(&r.UserID, &r.Score); err != nil {
 			return nil, err
 		}
 		ranks = append(ranks, r)

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCopySendsMessageReferenceAndKeyboard(t *testing.T) {
@@ -103,28 +104,14 @@ func TestMediaMapping(t *testing.T) {
 	}
 }
 
-func TestMessageLinksAndTop(t *testing.T) {
-	for _, tc := range []struct {
-		g    domain.Group
-		id   int
-		link string
-	}{
-		{domain.Group{ID: -1001234, Type: "supergroup", Username: "testgroup"}, 5, "https://t.me/testgroup/5"},
-		{domain.Group{ID: -1001234, Type: "supergroup"}, 5, "https://t.me/c/1234/5"},
-		{domain.Group{ID: -1234, Type: "group"}, 5, ""},
-		{domain.Group{Username: `bad"<script>`}, 5, ""},
-		{domain.Group{Username: "testgroup"}, 0, ""},
-	} {
-		if got := MessageLink(tc.g, tc.id); got != tc.link {
-			t.Fatal(got, tc.link)
+func TestUserTopEscapesNamesAndShowsAbsoluteScore(t *testing.T) {
+	text := TopText([]domain.Rank{{UserID: 7, Score: 100, Name: `Аня <script> & Борис`}, {UserID: 8, Score: 1}})
+	for _, want := range []string{"👑 Короли кринжа", `href="tg://user?id=7"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100", "Пользователь 8"} {
+		if !strings.Contains(text, want) {
+			t.Fatal(text, want)
 		}
 	}
-	g := domain.Group{ID: -1001234, Type: "supergroup"}
-	text := TopText(g, []domain.Rank{{MediaID: 7, MessageID: 5, Counts: domain.Counts{Cringe: 3, NonCringe: 2}}, {MediaID: 8, Counts: domain.Counts{Cringe: 1, NonCringe: 4}}})
-	if !strings.Contains(text, "60.0% (3/5)") || !strings.Contains(text, `href="https://t.me/c/1234/5"`) || !strings.Contains(text, "ссылка недоступна") {
-		t.Fatal(text)
-	}
-	if !strings.Contains(TopText(g, nil), "Пока нет") {
+	if !strings.Contains(TopText(nil), "Пока нет голосов") {
 		t.Fatal("empty top")
 	}
 }
@@ -152,5 +139,49 @@ func TestTopCommand(t *testing.T) {
 		if ok != tc.ok || address != tc.address {
 			t.Fatal(tc, address, ok)
 		}
+	}
+}
+
+func TestTopStillSendsWhenOptionalNameLookupTimesOut(t *testing.T) {
+	sent := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bot123:test/getChatMember":
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+		case "/bot123:test/sendMessage":
+			var payload struct {
+				Text      string `json:"text"`
+				ParseMode string `json:"parse_mode"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload.ParseMode != "HTML" {
+				t.Error(payload.ParseMode)
+			}
+			sent <- payload.Text
+			w.Write([]byte(`{"ok":true,"result":{}}`))
+		default:
+			t.Error(r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c := New("123:test")
+	c.BaseURL = server.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	if err := c.SendTop(ctx, domain.Group{ID: -100}, []domain.Rank{{UserID: 1, Score: 3}, {UserID: 2, Score: 2}, {UserID: 3, Score: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case text := <-sent:
+		if !strings.Contains(text, "Пользователь 3") || !strings.Contains(text, "👑 Короли кринжа") {
+			t.Fatal(text)
+		}
+	default:
+		t.Fatal("ranking was not sent")
 	}
 }

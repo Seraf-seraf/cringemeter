@@ -201,7 +201,7 @@ func TestCommonVoteChangesRatherThanAdds(t *testing.T) {
 		}
 	}
 	p, _ := store.Post(ctx, 1)
-	counts, _ := store.Counts(ctx, p.MediaID)
+	counts, _ := store.Counts(ctx, p.ID)
 	if counts.Cringe != 0 || counts.NonCringe != 1 || tg.answers != 3 || tg.counts[len(tg.counts)-1] != counts {
 		t.Fatal(counts, tg)
 	}
@@ -218,7 +218,7 @@ func TestVoteSurvivesTelegramFailuresAndRejectsForgedPost(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, _ := store.Post(ctx, 1)
-	counts, _ := store.Counts(ctx, p.MediaID)
+	counts, _ := store.Counts(ctx, p.ID)
 	if counts.Cringe != 1 {
 		t.Fatal(counts)
 	}
@@ -231,7 +231,7 @@ func TestVoteSurvivesTelegramFailuresAndRejectsForgedPost(t *testing.T) {
 	if len(tg.edits) != n {
 		t.Fatal("forged post was edited")
 	}
-	counts, _ = store.Counts(ctx, p.MediaID)
+	counts, _ = store.Counts(ctx, p.ID)
 	if counts.Total() != 1 {
 		t.Fatal(counts)
 	}
@@ -253,7 +253,7 @@ func TestSynchronizesCopiesAndRecoversAfter429(t *testing.T) {
 		t.Fatal("requests continued after429", tg.edits)
 	}
 	p, _ := store.Post(ctx, 1)
-	counts, _ := store.Counts(ctx, p.MediaID)
+	counts, _ := store.Counts(ctx, p.ID)
 	if counts.Cringe != 1 {
 		t.Fatal(counts)
 	}
@@ -312,32 +312,30 @@ func (f *fakeTelegram) SendTop(_ context.Context, g domain.Group, ranks []domain
 	return nil
 }
 
-func TestRankingShowsUniqueFiles(t *testing.T) {
+func TestRankingShowsUsersFromFirstCringeVote(t *testing.T) {
 	s, store, tg := setup(t)
 	ctx := context.Background()
 	g := domain.Group{ID: -100, Type: "group"}
-	if err := s.Ranking(ctx, g); err != nil || tg.tops != 1 || len(tg.ranks) != 0 {
-		t.Fatal(err, tg)
-	}
-	s.Publish(ctx, input(1))
-	s.Publish(ctx, input(2))
-	for i := 1; i <= 5; i++ {
-		if _, err := store.Vote(ctx, 1, -100, 101, int64(i), i%2, 10); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.Ranking(ctx, g); err != nil || len(tg.ranks) != 1 || tg.ranks[0].Counts.Total() != 5 {
+	if err := s.Ranking(ctx, g); err != nil || len(tg.ranks) != 0 {
 		t.Fatal(err, tg.ranks)
 	}
-	tg.editErr = &domain.APIError{Code: 400, Confirmed: true, MessageGone: true}
-	if err := s.Publish(ctx, input(2)); err != nil {
+	author := int64(42)
+	in := input(1)
+	in.UploaderID = &author
+	if err := s.Publish(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Ranking(ctx, g); err != nil {
+	if err := s.RecordVote(ctx, domain.Ballot{PostID: 1, ChatID: -100, MessageID: 101, UserID: 7, Vote: 1, CallbackID: "a"}); err != nil {
 		t.Fatal(err)
 	}
-	if tg.ranks[0].MessageID != 0 {
-		t.Fatal("dead links kept", tg.ranks)
+	if err := s.Ranking(ctx, g); err != nil || len(tg.ranks) != 1 || tg.ranks[0].UserID != 42 || tg.ranks[0].Score != 1 {
+		t.Fatal(err, tg.ranks)
+	}
+	if err := store.Unavailable(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ranking(ctx, g); err != nil || tg.ranks[0].Score != 1 {
+		t.Fatal(err, tg.ranks)
 	}
 }
 

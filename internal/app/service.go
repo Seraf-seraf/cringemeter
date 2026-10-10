@@ -23,7 +23,7 @@ type Repository interface {
 	Vote(context.Context, int64, int64, int, int64, int, int64) (int64, error)
 	Copies(context.Context, int64, int64, int) ([]domain.Post, error)
 	Unavailable(context.Context, int64) error
-	Top(context.Context, int64, int, int) ([]domain.Rank, error)
+	Top(context.Context, int64) ([]domain.Rank, error)
 }
 
 type Messenger interface {
@@ -35,11 +35,9 @@ type Messenger interface {
 }
 
 type Service struct {
-	Store       Repository
-	Telegram    Messenger
-	Now         func() time.Time
-	TopLimit    int
-	TopMinVotes int
+	Store    Repository
+	Telegram Messenger
+	Now      func() time.Time
 }
 
 func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
@@ -62,7 +60,7 @@ func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
 				return domain.ErrBusy
 			}
 		} else {
-			counts, err := s.Store.Counts(ctx, p.MediaID)
+			counts, err := s.Store.Counts(ctx, p.ID)
 			if err != nil {
 				// No Telegram request was attempted, so record a confirmed failure.
 				if saveErr := s.Store.CopyResult(ctx, p.ID, 0, domain.CopyFailed, s.Now().Unix()); saveErr != nil {
@@ -135,7 +133,7 @@ func (s *Service) sync(ctx context.Context, current domain.Post) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, SyncTimeout)
 	defer cancel()
-	counts, err := s.Store.Counts(ctx, current.MediaID)
+	counts, err := s.Store.Counts(ctx, current.ID)
 	if err != nil {
 		slog.WarnContext(ctx, "keyboard update deferred", "post_id", current.ID, "phase", "counts", "code", "counts_failed")
 		return
@@ -143,7 +141,7 @@ func (s *Service) sync(ctx context.Context, current domain.Post) {
 	if !s.edit(ctx, current, counts) {
 		return
 	}
-	posts, err := s.Store.Copies(ctx, current.MediaID, 0, MaxSyncCopies)
+	posts, err := s.Store.Copies(ctx, current.ID, 0, MaxSyncCopies)
 	if err != nil {
 		slog.WarnContext(ctx, "keyboard update deferred", "post_id", current.ID, "phase", "copies", "code", "copies_failed")
 		return
@@ -191,14 +189,7 @@ func (s *Service) edit(ctx context.Context, p domain.Post, counts domain.Counts)
 }
 
 func (s *Service) Ranking(ctx context.Context, group domain.Group) error {
-	limit, minVotes := s.TopLimit, s.TopMinVotes
-	if limit < 1 || limit > 10 {
-		limit = 10
-	}
-	if minVotes < 5 {
-		minVotes = 5
-	}
-	ranks, err := s.Store.Top(ctx, group.ID, minVotes, limit)
+	ranks, err := s.Store.Top(ctx, group.ID)
 	if err != nil {
 		return err
 	}

@@ -51,8 +51,7 @@ func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 					case strings.Contains(sql, "FROM sqlite_master"):
 						cols = []any{map[string]any{"name": "name"}, map[string]any{"name": "sql"}}
 						if version == 1 {
-							for i, name := range []string{"media", "posts", "votes", "idx_posts_media_id"} {
-								definition := strings.Split(initialSchema, ";")[i]
+							for name, definition := range schemaObjects() {
 								rows = append(rows, []any{map[string]any{"type": "text", "value": name}, map[string]any{"type": "text", "value": definition}})
 							}
 						}
@@ -66,7 +65,7 @@ func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 					case sql == "ROLLBACK":
 						transaction = false
 						rolledBack = true
-					case fail && strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS posts"):
+					case fail && strings.HasPrefix(sql, "CREATE TRIGGER IF NOT EXISTS rank_vote_insert"):
 						results = append(results, map[string]any{"type": "error", "error": map[string]any{"code": "SQLITE_ERROR", "message": "injected schema failure"}})
 						continue
 					}

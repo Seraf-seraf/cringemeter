@@ -66,7 +66,7 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 		return err
 	}
 	defer store.Close()
-	service := app.Service{Store: store, Telegram: client, Now: time.Now, TopLimit: c.TopLimit, TopMinVotes: c.TopMinVotes}
+	service := app.Service{Store: store, Telegram: client, Now: time.Now}
 	if isMedia {
 		return service.Publish(ctx, incoming)
 	}

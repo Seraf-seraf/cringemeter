@@ -70,15 +70,15 @@ func TestMediaPostsVotes(t *testing.T) {
 	if _, err := s.Vote(ctx, b.ID, -100, 102, 7, 1, 11); err != nil {
 		t.Fatal(err)
 	}
-	counts, err := s.Counts(ctx, b.MediaID)
+	counts, err := s.Counts(ctx, b.ID)
 	if err != nil || counts.Cringe != 1 || counts.NonCringe != 0 {
 		t.Fatal(counts, err)
 	}
-	other, _ := s.Counts(ctx, c.MediaID)
+	other, _ := s.Counts(ctx, c.ID)
 	if other.Total() != 0 {
 		t.Fatal(other)
 	}
-	copies, err := s.Copies(ctx, a.MediaID, 0, 100)
+	copies, err := s.Copies(ctx, a.ID, 0, 100)
 	if err != nil || len(copies) != 2 {
 		t.Fatal(copies, err)
 	}
@@ -94,7 +94,7 @@ func TestMediaPostsVotes(t *testing.T) {
 	var mediaN, postsN, votesN int
 	s.DB.QueryRow("SELECT COUNT(*) FROM media").Scan(&mediaN)
 	s.DB.QueryRow("SELECT COUNT(*) FROM posts").Scan(&postsN)
-	s.DB.QueryRow("SELECT COUNT(*) FROM votes").Scan(&votesN)
+	s.DB.QueryRow("SELECT COUNT(*) FROM author_votes").Scan(&votesN)
 	if mediaN != 2 || postsN != 3 || votesN != 1 {
 		t.Fatal(mediaN, postsN, votesN)
 	}
@@ -169,43 +169,131 @@ func TestConcurrentVotes(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	counts, err := s.Counts(ctx, p.MediaID)
+	counts, err := s.Counts(ctx, p.ID)
 	if err != nil || counts.Total() != 10 {
 		t.Fatal(counts, err)
 	}
 }
 
-func TestTopUsesUniqueMediaAndThreshold(t *testing.T) {
+func ownedPost(t *testing.T, s *Store, source int, file string, owner int64) domain.Post {
+	t.Helper()
+	p, err := s.Register(context.Background(), domain.Incoming{ChatID: -100, MessageID: source, UniqueID: file, MediaType: "video", UploaderID: &owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish(t, s, p, 100+source)
+	return p
+}
+func voteFor(t *testing.T, s *Store, p domain.Post, voter int64, value int) {
+	t.Helper()
+	if _, err := s.Vote(context.Background(), p.ID, p.ChatID, 100+p.SourceMessageID, voter, value, 10); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestUserRankingSeparatesAuthorsDeduplicatesFilesAndBreaksTies(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	a, b, c := register(t, s, 1, "same"), register(t, s, 2, "same"), register(t, s, 3, "other")
-	publish(t, s, a, 101)
-	publish(t, s, b, 102)
-	publish(t, s, c, 103)
-	for i := 1; i <= 4; i++ {
-		s.Vote(ctx, a.ID, -100, 101, int64(i), 1, 10)
+	a := ownedPost(t, s, 1, "same", 50)
+	aRepeat := ownedPost(t, s, 2, "same", 50)
+	b := ownedPost(t, s, 3, "same", 10)
+	aOther := ownedPost(t, s, 4, "other", 50)
+	// Only the author under whose copy the vote was cast earns the point.
+	voteFor(t, s, a, 7, 1)
+	top, err := s.Top(ctx, -100)
+	if err != nil || len(top) != 1 || top[0].UserID != 50 || top[0].Score != 1 {
+		t.Fatal(top, err)
 	}
-	top, err := s.Top(ctx, -100, 5, 10)
+	c, _ := s.Counts(ctx, b.ID)
+	if c.Total() != 0 {
+		t.Fatal("other author got vote", c)
+	}
+	copies, err := s.Copies(ctx, a.ID, 0, 10)
+	if err != nil || len(copies) != 2 {
+		t.Fatal(copies, err)
+	}
+	// Same voter, same author and same file remains one point.
+	voteFor(t, s, aRepeat, 7, 1)
+	voteFor(t, s, b, 7, 1)
+	top, err = s.Top(ctx, -100)
+	if err != nil || len(top) != 2 || top[0].UserID != 50 {
+		t.Fatal(top, err)
+	}
+	// A second file adds to the author's absolute total; non-cringe does not.
+	voteFor(t, s, aOther, 7, 1)
+	voteFor(t, s, b, 8, 0)
+	top, err = s.Top(ctx, -100)
+	if err != nil || top[0].Score != 2 {
+		t.Fatal(top, err)
+	}
+	// Losing a point and regaining it places the author after the incumbent.
+	voteFor(t, s, aOther, 7, 0)
+	voteFor(t, s, a, 7, 0)
+	voteFor(t, s, aRepeat, 7, 1)
+	top, err = s.Top(ctx, -100)
+	if err != nil || top[0].UserID != 10 {
+		t.Fatal(top, err)
+	}
+	voteFor(t, s, b, 7, 1) // Same-choice replay cannot change the tie order.
+	top, err = s.Top(ctx, -100)
+	if err != nil || top[0].UserID != 10 {
+		t.Fatal(top, err)
+	}
+	// Repeat publication cannot reset its author's position.
+	ownedPost(t, s, 5, "same", 10)
+	top, err = s.Top(ctx, -100)
+	if err != nil || top[0].UserID != 10 {
+		t.Fatal(top, err)
+	}
+	for i := 6; i <= 8; i++ {
+		p := ownedPost(t, s, i, "extra"+string(rune('a'+i)), int64(i))
+		voteFor(t, s, p, 7, 1)
+	}
+	top, err = s.Top(ctx, -100)
+	if err != nil || len(top) != 3 || top[0].UserID != 10 || top[1].UserID != 50 || top[2].UserID != 6 {
+		t.Fatal(top, err)
+	}
+	top, err = s.Top(ctx, -200)
 	if err != nil || len(top) != 0 {
 		t.Fatal(top, err)
 	}
-	s.Vote(ctx, b.ID, -100, 102, 5, 1, 10)
-	for i := 1; i <= 6; i++ {
-		s.Vote(ctx, c.ID, -100, 103, int64(i), 1, 10)
+}
+
+func TestConcurrentUserScoresAreAtomicAndReplayStable(t *testing.T) {
+	s := testStore(t)
+	s.DB.SetMaxOpenConns(4)
+	ctx := context.Background()
+	a := ownedPost(t, s, 1, "a", 1)
+	b := ownedPost(t, s, 2, "b", 2)
+	var wg sync.WaitGroup
+	for i := 1; i <= 40; i++ {
+		for _, p := range []domain.Post{a, b} {
+			wg.Add(1)
+			go func(p domain.Post, v int64) {
+				defer wg.Done()
+				if _, err := s.Vote(ctx, p.ID, -100, 100+p.SourceMessageID, v, 1, 10); err != nil {
+					t.Error(err)
+				}
+			}(p, int64(i))
+		}
 	}
-	top, err = s.Top(ctx, -100, 5, 10)
-	if err != nil || len(top) != 2 || top[0].MediaID != c.MediaID || top[1].MediaID != a.MediaID || top[1].MessageID != 102 {
+	wg.Wait()
+	top, err := s.Top(ctx, -100)
+	if err != nil || len(top) != 2 || top[0].Score != 40 || top[1].Score != 40 {
 		t.Fatal(top, err)
 	}
-	top, err = s.Top(ctx, -100, 5, 1)
-	if err != nil || len(top) != 1 {
+	first := top[0].UserID
+	voteFor(t, s, a, 1, 1)
+	voteFor(t, s, b, 1, 1)
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	top, err = s.Top(ctx, -100)
+	if err != nil || top[0].UserID != first {
 		t.Fatal(top, err)
 	}
-	// Equal totals and ratio use increasing media ID as the last tie breaker.
-	s.Vote(ctx, b.ID, -100, 102, 6, 1, 10)
-	top, err = s.Top(ctx, -100, 5, 10)
-	if err != nil || top[0].MediaID != a.MediaID {
-		t.Fatal(top, err)
+	var mismatch int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM user_scores s JOIN score_positions p ON p.chat_id=s.chat_id AND p.user_id=s.user_id WHERE s.score!=p.score`).Scan(&mismatch); err != nil || mismatch != 0 {
+		t.Fatal(mismatch, err)
 	}
 }
 
@@ -227,3 +315,63 @@ func TestSchemaCheckRejectsIncompatibleExistingTable(t *testing.T) {
 		t.Fatal(count, err)
 	}
 }
+
+func TestMigrationResetsLegacyVotesOnceAndRejectsLateLegacyWrites(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "old.db")+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err = db.Exec(initialSchema); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{DB: db}
+	ctx := context.Background()
+	a, err := s.Register(ctx, domain.Incoming{ChatID: -100, MessageID: 1, MediaType: "video", UniqueID: "shared", UploaderID: ptr(50)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Register(ctx, domain.Incoming{ChatID: -100, MessageID: 2, MediaType: "video", UniqueID: "shared", UploaderID: ptr(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO votes(media_id,user_id,vote,updated_at) VALUES(?,7,1,10),(?,8,0,11)`, a.MediaID, a.MediaID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.Counts(ctx, a.ID)
+	if err != nil || counts.Total() != 0 {
+		t.Fatal(counts, err)
+	}
+	counts, err = s.Counts(ctx, b.ID)
+	if err != nil || counts.Total() != 0 {
+		t.Fatal(counts, err)
+	}
+	top, err := s.Top(ctx, -100)
+	if err != nil || len(top) != 0 {
+		t.Fatal(top, err)
+	}
+	if _, err = db.Exec(`INSERT INTO votes(media_id,user_id,vote,updated_at) VALUES(?,9,1,12)`, a.MediaID); err == nil {
+		t.Fatal("late old-deployment vote accepted without author")
+	}
+
+	publish(t, s, a, 101)
+	publish(t, s, b, 102)
+	voteFor(t, s, a, 7, 1)
+	voteFor(t, s, b, 7, 1)
+	if err = s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	top, err = s.Top(ctx, -100)
+	if err != nil || len(top) != 2 || top[0].UserID != 50 || top[1].UserID != 10 {
+		t.Fatal(top, err)
+	}
+	var archive int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM votes`).Scan(&archive); err != nil || archive != 0 {
+		t.Fatal(archive, err)
+	}
+}
+func ptr(v int64) *int64 { return &v }

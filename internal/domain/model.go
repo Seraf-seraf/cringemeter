@@ -25,6 +25,7 @@ type Incoming struct {
 }
 
 type Post struct {
+	UploaderID      int64
 	ID              int64
 	MediaID         int64
 	ChatID          int64
@@ -38,9 +39,9 @@ type Counts struct{ Cringe, NonCringe int64 }
 func (c Counts) Total() int64 { return c.Cringe + c.NonCringe }
 
 type Rank struct {
-	MediaID   int64
-	MessageID int
-	Counts    Counts
+	UserID int64
+	Score  int64
+	Name   string
 }
 
 type APIError struct {

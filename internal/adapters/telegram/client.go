@@ -19,6 +19,7 @@ import (
 
 const APITimeout = 3 * time.Second
 const MaxResponseBytes = 1 << 20
+const TopNamesTimeout = time.Second
 
 type Client struct {
 	Token   string
@@ -110,7 +111,7 @@ func Incoming(m *tg.Message) (domain.Incoming, bool) {
 		return domain.Incoming{}, false
 	}
 	in := domain.Incoming{ChatID: m.Chat.ID, MessageID: m.MessageID}
-	if m.From != nil {
+	if m.From != nil && m.From.ID > 0 && m.SenderChat == nil {
 		userID := m.From.ID
 		in.UploaderID = &userID
 	}
@@ -152,49 +153,42 @@ func Ballot(q *tg.CallbackQuery) (domain.Ballot, bool) {
 	return domain.Ballot{CallbackID: q.ID, PostID: postID, ChatID: q.Message.Chat.ID, MessageID: q.Message.MessageID, UserID: q.From.ID, Vote: vote}, true
 }
 
-func MessageLink(group domain.Group, messageID int) string {
-	if messageID <= 0 {
-		return ""
-	}
-	if group.Username != "" {
-		for _, ch := range group.Username {
-			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_') {
-				return ""
-			}
-		}
-		return "https://t.me/" + group.Username + "/" + strconv.Itoa(messageID)
-	}
-	chatID := strconv.FormatInt(group.ID, 10)
-	if group.Type == "supergroup" && strings.HasPrefix(chatID, "-100") && len(chatID) > 4 {
-		return "https://t.me/c/" + chatID[4:] + "/" + strconv.Itoa(messageID)
-	}
-	return ""
-}
-
-func TopText(group domain.Group, ranks []domain.Rank) string {
+func TopText(ranks []domain.Rank) string {
 	if len(ranks) == 0 {
-		return "Пока нет видео с достаточным количеством голосов."
+		return "👑 Короли кринжа\nПока нет голосов «Кринж» за видео пользователей."
 	}
 	var text strings.Builder
-	text.WriteString("<b>🤡 Топ кринжа</b>\n")
+	text.WriteString("<b>👑 Короли кринжа</b>\n")
 	for i, r := range ranks {
-		percent := 0.0
-		if r.Counts.Total() > 0 {
-			percent = float64(r.Counts.Cringe) * 100 / float64(r.Counts.Total())
+		name := r.Name
+		if name == "" {
+			name = "Пользователь " + strconv.FormatInt(r.UserID, 10)
 		}
-		title := "Видео #" + strconv.FormatInt(r.MediaID, 10)
-		if link := MessageLink(group, r.MessageID); link != "" {
-			title = `<a href="` + html.EscapeString(link) + `">` + title + `</a>`
-		} else {
-			title += " (ссылка недоступна)"
-		}
-		fmt.Fprintf(&text, "%d. %s — %.1f%% (%d/%d)\n", i+1, title, percent, r.Counts.Cringe, r.Counts.Total())
+		fmt.Fprintf(&text, "%d. <a href=\"tg://user?id=%d\">%s</a> — 🤡 %d\n", i+1, r.UserID, html.EscapeString(name), r.Score)
 	}
 	return text.String()
 }
 
 func (c *Client) SendTop(ctx context.Context, group domain.Group, ranks []domain.Rank) error {
-	return c.Call(ctx, "sendMessage", map[string]any{"chat_id": group.ID, "text": TopText(group, ranks), "parse_mode": "HTML", "link_preview_options": map[string]bool{"is_disabled": true}}, nil)
+	// Names are optional: reserve the webhook budget for sending the ranking.
+	namesCtx, cancel := context.WithTimeout(ctx, TopNamesTimeout)
+	defer cancel()
+	ranks = append([]domain.Rank(nil), ranks...)
+	for i := range ranks {
+		if namesCtx.Err() != nil {
+			break
+		}
+		var member struct {
+			User tg.User `json:"user"`
+		}
+		if err := c.Call(namesCtx, "getChatMember", map[string]any{"chat_id": group.ID, "user_id": ranks[i].UserID}, &member); err == nil {
+			ranks[i].Name = strings.TrimSpace(member.User.FirstName + " " + member.User.LastName)
+			if ranks[i].Name == "" {
+				ranks[i].Name = member.User.UserName
+			}
+		}
+	}
+	return c.Call(ctx, "sendMessage", map[string]any{"chat_id": group.ID, "text": TopText(ranks), "parse_mode": "HTML", "link_preview_options": map[string]bool{"is_disabled": true}}, nil)
 }
 
 func TopCommand(m *tg.Message) (string, bool) {
