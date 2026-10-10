@@ -43,6 +43,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ID       *int            `json:"update_id"`
 		Message  json.RawMessage `json:"message"`
 		Callback json.RawMessage `json:"callback_query"`
+		Member   json.RawMessage `json:"my_chat_member"`
 	}
 	err := httpjson.DecodeObject(r.Body, &envelope)
 	if err != nil {
@@ -54,8 +55,24 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if envelope.ID == nil || *envelope.ID < 0 || (len(envelope.Message) > 0) == (len(envelope.Callback) > 0) {
+	types := 0
+	for _, payload := range []json.RawMessage{envelope.Message, envelope.Callback, envelope.Member} {
+		if len(payload) > 0 {
+			types++
+		}
+	}
+	if envelope.ID == nil || *envelope.ID < 0 || types != 1 {
 		http.Error(w, "invalid update", http.StatusBadRequest)
+		return
+	}
+	// Queued membership events can predate allowed_updates registration.
+	if len(envelope.Member) > 0 {
+		var member *tg.ChatMemberUpdated
+		if json.Unmarshal(envelope.Member, &member) != nil || member == nil || member.Chat.ID == 0 {
+			http.Error(w, "invalid membership update", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	u := tg.Update{UpdateID: *envelope.ID}

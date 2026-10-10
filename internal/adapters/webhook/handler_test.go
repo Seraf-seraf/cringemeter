@@ -76,3 +76,15 @@ func TestDuplicateKeysAndOversizedTrailingData(t *testing.T) {
 		}
 	}
 }
+
+func TestQueuedMembershipUpdateIsAcknowledgedWithoutSideEffects(t *testing.T) {
+	called := false
+	h := Handler{Config: config.Config{WebhookSecret: "s", ChatID: -100}, Process: func(context.Context, tg.Update) error { called = true; return nil }}
+	r := httptest.NewRequest("POST", "/api/webhook", strings.NewReader(`{"update_id":1,"my_chat_member":{"chat":{"id":-100,"type":"supergroup"}}}`))
+	r.Header.Set("X-Telegram-Bot-Api-Secret-Token", "s")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 || called {
+		t.Fatal(w.Code, called)
+	}
+}
