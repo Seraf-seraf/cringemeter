@@ -1,4 +1,4 @@
-module github.com/Seraf-seraf/cringemeter
+module handler
 
 go 1.22
 

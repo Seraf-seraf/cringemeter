@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/Seraf-seraf/cringemeter/internal/adapters/webhook"
-	"github.com/Seraf-seraf/cringemeter/internal/config"
+	"handler/internal/adapters/webhook"
+	"handler/internal/config"
 	tg "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 

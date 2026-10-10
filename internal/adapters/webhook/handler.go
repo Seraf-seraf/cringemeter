@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Seraf-seraf/cringemeter/internal/config"
+	"handler/internal/config"
 	tg "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
