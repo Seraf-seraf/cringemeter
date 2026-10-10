@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"handler/internal/config"
 	tg "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"handler/internal/config"
 )
 
 func TestHTTPBoundary(t *testing.T) {
@@ -54,5 +54,25 @@ func TestProcessingErrorIsOpaque(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 503 || strings.Contains(w.Body.String(), "credentials") {
 		t.Fatal(w)
+	}
+}
+
+func TestDuplicateKeysAndOversizedTrailingData(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		code int
+	}{
+		{`{"update_id":1,"update_id":2,"message":{"message_id":1,"chat":{"id":-100,"type":"group"}}}`, 400},
+		{`{"update_id":1,"message":{"message_id":1,"chat":{"id":-100,"type":"group"}}}` + strings.Repeat(" ", MaxBodyBytes), 413},
+	} {
+		called := false
+		h := Handler{Config: config.Config{WebhookSecret: "s", ChatID: -100}, Process: func(context.Context, tg.Update) error { called = true; return nil }}
+		r := httptest.NewRequest("POST", "/api/webhook", strings.NewReader(tc.body))
+		r.Header.Set("X-Telegram-Bot-Api-Secret-Token", "s")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.code || called {
+			t.Fatal(w.Code, called)
+		}
 	}
 }

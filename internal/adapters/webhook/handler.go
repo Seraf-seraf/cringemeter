@@ -2,17 +2,16 @@ package webhook
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
-	"handler/internal/config"
 	tg "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"handler/internal/adapters/httpauth"
+	"handler/internal/adapters/httpjson"
+	"handler/internal/config"
 )
 
 const MaxBodyBytes = 1 << 20
@@ -34,8 +33,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	want, got := sha256.Sum256([]byte(h.Config.WebhookSecret)), sha256.Sum256([]byte(r.Header.Get("X-Telegram-Bot-Api-Secret-Token")))
-	if h.Config.WebhookSecret == "" || subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+	if !httpauth.Matches(h.Config.WebhookSecret, r.Header.Get("X-Telegram-Bot-Api-Secret-Token")) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -46,15 +44,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Message  json.RawMessage `json:"message"`
 		Callback json.RawMessage `json:"callback_query"`
 	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	err := dec.Decode(&envelope)
-	if err == nil {
-		var tail any
-		if dec.Decode(&tail) != io.EOF {
-			err = errors.New("trailing JSON")
-		}
-	}
+	err := httpjson.DecodeObject(r.Body, &envelope)
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {

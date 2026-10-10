@@ -1,6 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/webhook.go": { "maxDuration": 10 }
+    "api/webhook.go": {
+      "maxDuration": 10
+    },
+    "api/operations.go": {
+      "maxDuration": 35
+    }
   }
 }
