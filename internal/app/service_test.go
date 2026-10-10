@@ -14,6 +14,9 @@ import (
 )
 
 type fakeTelegram struct {
+	ranks              []domain.Rank
+	group              domain.Group
+	tops               int
 	edits              []domain.Post
 	counts             []domain.Counts
 	answers            int
@@ -297,5 +300,43 @@ func TestSynchronizationBoundsWork(t *testing.T) {
 				t.Fatal(len(tg.edits), want, tg.edits)
 			}
 		})
+	}
+}
+
+func (f *fakeTelegram) SendTop(_ context.Context, g domain.Group, ranks []domain.Rank) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tops++
+	f.group = g
+	f.ranks = ranks
+	return nil
+}
+
+func TestRankingShowsUniqueFiles(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	g := domain.Group{ID: -100, Type: "group"}
+	if err := s.Ranking(ctx, g); err != nil || tg.tops != 1 || len(tg.ranks) != 0 {
+		t.Fatal(err, tg)
+	}
+	s.Publish(ctx, input(1))
+	s.Publish(ctx, input(2))
+	for i := 1; i <= 5; i++ {
+		if _, err := store.Vote(ctx, 1, -100, 101, int64(i), i%2, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Ranking(ctx, g); err != nil || len(tg.ranks) != 1 || tg.ranks[0].Counts.Total() != 5 {
+		t.Fatal(err, tg.ranks)
+	}
+	tg.editErr = &domain.APIError{Code: 400, Confirmed: true, MessageGone: true}
+	if err := s.Publish(ctx, input(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ranking(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	if tg.ranks[0].MessageID != 0 {
+		t.Fatal("dead links kept", tg.ranks)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strconv"
@@ -67,7 +69,7 @@ func (c *Client) Call(ctx context.Context, method string, payload any, result an
 			code = res.StatusCode
 		}
 		lower := strings.ToLower(reply.Description)
-		return &domain.APIError{Code: code, RetryAfter: reply.Parameters.RetryAfter, Confirmed: code >= 400 && code < 500, MessageGone: code == 400 && strings.Contains(lower, "message to delete not found"), NotModified: code == 400 && strings.Contains(lower, "message is not modified")}
+		return &domain.APIError{Code: code, RetryAfter: reply.Parameters.RetryAfter, Confirmed: code >= 400 && code < 500, MessageGone: code == 400 && (strings.Contains(lower, "message to delete not found") || strings.Contains(lower, "message to edit not found")), NotModified: code == 400 && strings.Contains(lower, "message is not modified")}
 	}
 	if result != nil && json.Unmarshal(reply.Result, result) != nil {
 		return &domain.APIError{}
@@ -148,4 +150,78 @@ func Ballot(q *tg.CallbackQuery) (domain.Ballot, bool) {
 		vote = 1
 	}
 	return domain.Ballot{CallbackID: q.ID, PostID: postID, ChatID: q.Message.Chat.ID, MessageID: q.Message.MessageID, UserID: q.From.ID, Vote: vote}, true
+}
+
+func MessageLink(group domain.Group, messageID int) string {
+	if messageID <= 0 {
+		return ""
+	}
+	if group.Username != "" {
+		for _, ch := range group.Username {
+			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_') {
+				return ""
+			}
+		}
+		return "https://t.me/" + group.Username + "/" + strconv.Itoa(messageID)
+	}
+	chatID := strconv.FormatInt(group.ID, 10)
+	if group.Type == "supergroup" && strings.HasPrefix(chatID, "-100") && len(chatID) > 4 {
+		return "https://t.me/c/" + chatID[4:] + "/" + strconv.Itoa(messageID)
+	}
+	return ""
+}
+
+func TopText(group domain.Group, ranks []domain.Rank) string {
+	if len(ranks) == 0 {
+		return "Пока нет видео с достаточным количеством голосов."
+	}
+	var text strings.Builder
+	text.WriteString("<b>🤡 Топ кринжа</b>\n")
+	for i, r := range ranks {
+		percent := 0.0
+		if r.Counts.Total() > 0 {
+			percent = float64(r.Counts.Cringe) * 100 / float64(r.Counts.Total())
+		}
+		title := "Видео #" + strconv.FormatInt(r.MediaID, 10)
+		if link := MessageLink(group, r.MessageID); link != "" {
+			title = `<a href="` + html.EscapeString(link) + `">` + title + `</a>`
+		} else {
+			title += " (ссылка недоступна)"
+		}
+		fmt.Fprintf(&text, "%d. %s — %.1f%% (%d/%d)\n", i+1, title, percent, r.Counts.Cringe, r.Counts.Total())
+	}
+	return text.String()
+}
+
+func (c *Client) SendTop(ctx context.Context, group domain.Group, ranks []domain.Rank) error {
+	return c.Call(ctx, "sendMessage", map[string]any{"chat_id": group.ID, "text": TopText(group, ranks), "parse_mode": "HTML", "link_preview_options": map[string]bool{"is_disabled": true}}, nil)
+}
+
+func TopCommand(m *tg.Message) (string, bool) {
+	if m == nil || !m.IsCommand() || !strings.HasPrefix(m.Text, "/") {
+		return "", false
+	}
+	fields := strings.Fields(m.Text)
+	if len(fields) == 0 {
+		return "", false
+	}
+	command := strings.Split(fields[0], "@")
+	if len(command) > 2 || command[0] != "/top" {
+		return "", false
+	}
+	if len(command) == 2 {
+		if command[1] == "" {
+			return "", false
+		}
+		return command[1], true
+	}
+	return "", true
+}
+
+func (c *Client) Username(ctx context.Context) (string, error) {
+	var user tg.User
+	if err := c.Call(ctx, "getMe", map[string]any{}, &user); err != nil {
+		return "", err
+	}
+	return user.UserName, nil
 }

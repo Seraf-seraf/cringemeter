@@ -193,3 +193,8 @@ func (s *Store) Top(ctx context.Context, chatID int64, minVotes, limit int) ([]d
 	}
 	return ranks, rows.Err()
 }
+
+func (s *Store) Unavailable(ctx context.Context, id int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE posts SET bot_message_id=NULL WHERE id=? AND state='done'`, id)
+	return err
+}

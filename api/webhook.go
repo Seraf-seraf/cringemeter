@@ -5,10 +5,16 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
-	"handler/internal/adapters/webhook"
-	"handler/internal/config"
 	tg "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"handler/internal/adapters/telegram"
+	"handler/internal/adapters/turso"
+	"handler/internal/adapters/webhook"
+	"handler/internal/app"
+	"handler/internal/config"
+	"handler/internal/domain"
 )
 
 func Handler(w http.ResponseWriter, r *http.Request) {
@@ -18,5 +24,54 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	webhook.Handler{Config: c, Process: func(context.Context, tg.Update) error { return nil }}.ServeHTTP(w, r)
+	webhook.Handler{Config: c, Process: func(ctx context.Context, u tg.Update) error { return process(ctx, c, u) }}.ServeHTTP(w, r)
+}
+
+func process(ctx context.Context, c config.Config, u tg.Update) error {
+	client := telegram.New(c.BotToken)
+	var incoming domain.Incoming
+	var ballot domain.Ballot
+	var group domain.Group
+	var isMedia, isTop bool
+	if u.Message != nil {
+		incoming, isMedia = telegram.Incoming(u.Message)
+		if !isMedia {
+			address, ok := telegram.TopCommand(u.Message)
+			if !ok {
+				return nil
+			}
+			if address != "" {
+				username, err := client.Username(ctx)
+				if err != nil {
+					return err
+				}
+				if !strings.EqualFold(username, address) {
+					return nil
+				}
+			}
+			isTop = true
+			group = domain.Group{ID: u.Message.Chat.ID, Type: u.Message.Chat.Type, Username: u.Message.Chat.UserName}
+		}
+	} else if u.CallbackQuery != nil {
+		var ok bool
+		ballot, ok = telegram.Ballot(u.CallbackQuery)
+		if !ok {
+			return client.Answer(ctx, u.CallbackQuery.ID, "Кнопка недоступна")
+		}
+	} else {
+		return nil
+	}
+	store, err := turso.Open(c.DatabaseURL, c.AuthToken)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	service := app.Service{Store: store, Telegram: client, Now: time.Now, TopLimit: c.TopLimit, TopMinVotes: c.TopMinVotes}
+	if isMedia {
+		return service.Publish(ctx, incoming)
+	}
+	if isTop {
+		return service.Ranking(ctx, group)
+	}
+	return service.RecordVote(ctx, ballot)
 }

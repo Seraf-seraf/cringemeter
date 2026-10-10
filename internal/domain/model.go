@@ -61,3 +61,9 @@ type Ballot struct {
 	UserID     int64
 	Vote       int
 }
+
+type Group struct {
+	ID       int64
+	Type     string
+	Username string
+}

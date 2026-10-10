@@ -22,6 +22,8 @@ type Repository interface {
 	Counts(context.Context, int64) (domain.Counts, error)
 	Vote(context.Context, int64, int64, int, int64, int, int64) (int64, error)
 	Copies(context.Context, int64, int64, int) ([]domain.Post, error)
+	Unavailable(context.Context, int64) error
+	Top(context.Context, int64, int, int) ([]domain.Rank, error)
 }
 
 type Messenger interface {
@@ -29,12 +31,15 @@ type Messenger interface {
 	Delete(context.Context, int64, int) error
 	Answer(context.Context, string, string) error
 	Edit(context.Context, domain.Post, domain.Counts) error
+	SendTop(context.Context, domain.Group, []domain.Rank) error
 }
 
 type Service struct {
-	Store    Repository
-	Telegram Messenger
-	Now      func() time.Time
+	Store       Repository
+	Telegram    Messenger
+	Now         func() time.Time
+	TopLimit    int
+	TopMinVotes int
 }
 
 func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
@@ -164,6 +169,12 @@ func (s *Service) edit(ctx context.Context, p domain.Post, counts domain.Counts)
 	}
 	var apiErr *domain.APIError
 	if errors.As(err, &apiErr) {
+		if apiErr.MessageGone {
+			if err := s.Store.Unavailable(ctx, p.ID); err != nil {
+				slog.WarnContext(ctx, "missing copy not recorded", "post_id", p.ID, "phase", "missing_copy", "code", "store_failed")
+			}
+			return ctx.Err() == nil
+		}
 		if apiErr.NotModified {
 			return true
 		}
@@ -174,4 +185,19 @@ func (s *Service) edit(ctx context.Context, p domain.Post, counts domain.Counts)
 	}
 	slog.WarnContext(ctx, "keyboard update deferred", "post_id", p.ID, "phase", "edit", "code", "edit_failed")
 	return ctx.Err() == nil
+}
+
+func (s *Service) Ranking(ctx context.Context, group domain.Group) error {
+	limit, minVotes := s.TopLimit, s.TopMinVotes
+	if limit < 1 || limit > 10 {
+		limit = 10
+	}
+	if minVotes < 5 {
+		minVotes = 5
+	}
+	ranks, err := s.Store.Top(ctx, group.ID, minVotes, limit)
+	if err != nil {
+		return err
+	}
+	return s.Telegram.SendTop(ctx, group, ranks)
 }

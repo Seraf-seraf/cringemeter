@@ -97,3 +97,40 @@ func TestMediaMapping(t *testing.T) {
 		})
 	}
 }
+
+func TestMessageLinksAndTop(t *testing.T) {
+	for _, tc := range []struct {
+		g    domain.Group
+		id   int
+		link string
+	}{
+		{domain.Group{ID: -1001234, Type: "supergroup", Username: "testgroup"}, 5, "https://t.me/testgroup/5"},
+		{domain.Group{ID: -1001234, Type: "supergroup"}, 5, "https://t.me/c/1234/5"},
+		{domain.Group{ID: -1234, Type: "group"}, 5, ""},
+		{domain.Group{Username: `bad"<script>`}, 5, ""},
+		{domain.Group{Username: "testgroup"}, 0, ""},
+	} {
+		if got := MessageLink(tc.g, tc.id); got != tc.link {
+			t.Fatal(got, tc.link)
+		}
+	}
+	g := domain.Group{ID: -1001234, Type: "supergroup"}
+	text := TopText(g, []domain.Rank{{MediaID: 7, MessageID: 5, Counts: domain.Counts{Cringe: 3, NonCringe: 2}}, {MediaID: 8, Counts: domain.Counts{Cringe: 1, NonCringe: 4}}})
+	if !strings.Contains(text, "60.0% (3/5)") || !strings.Contains(text, `href="https://t.me/c/1234/5"`) || !strings.Contains(text, "ссылка недоступна") {
+		t.Fatal(text)
+	}
+	if !strings.Contains(TopText(g, nil), "Пока нет") {
+		t.Fatal("empty top")
+	}
+}
+
+func TestCallbackContract(t *testing.T) {
+	for _, data := range []string{"v:1:1", "v:9223372036854775807:0", "v:0:1", "v:-1:1", "v:01:1", "v:1:2", "1:1", "v:999999999999999999999:1"} {
+		q := &tg.CallbackQuery{ID: "c", Data: data, From: &tg.User{ID: 42}, Message: &tg.Message{MessageID: 1, Chat: &tg.Chat{ID: -100}}}
+		b, ok := Ballot(q)
+		want := data == "v:1:1" || data == "v:9223372036854775807:0"
+		if ok != want || ok && b.UserID != 42 {
+			t.Fatal(data, b, ok)
+		}
+	}
+}
