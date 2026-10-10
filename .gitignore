@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+.vercel/
+/bin/
+/coverage.out
+*.test
+.codex-task-state.md
