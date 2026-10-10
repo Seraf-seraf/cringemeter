@@ -25,12 +25,17 @@ func TestCopySendsMessageReferenceAndKeyboard(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Error(err)
 		}
-		if payload.ChatID != -100 || payload.Source != 7 || len(payload.Markup.InlineKeyboard) != 1 {
+		if payload.ChatID != -100 || payload.Source != 7 {
 			t.Error(payload)
 		}
-		buttons := payload.Markup.InlineKeyboard[0]
-		if buttons[0].Text != "🤡Кринж · 2" || buttons[1].Text != "Некринж🙂‍↕️ · 3" || *buttons[0].CallbackData != "v:9:1" {
-			t.Error(buttons)
+		rows := payload.Markup.InlineKeyboard
+		if len(rows) != 2 || len(rows[0]) != 1 || len(rows[1]) != 1 {
+			t.Error(rows)
+			return
+		}
+		cringe, nonCringe := rows[0][0], rows[1][0]
+		if cringe.Text != "🤡Кринж · 2" || nonCringe.Text != "Некринж🙂‍↕️ · 3" || cringe.CallbackData == nil || nonCringe.CallbackData == nil || *cringe.CallbackData != "v:9:1" || *nonCringe.CallbackData != "v:9:0" {
+			t.Error(rows)
 		}
 		w.Write([]byte(`{"ok":true,"result":{"message_id":101}}`))
 	}))
