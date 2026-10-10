@@ -208,3 +208,22 @@ func TestTopUsesUniqueMediaAndThreshold(t *testing.T) {
 		t.Fatal(top, err)
 	}
 }
+
+func TestSchemaCheckRejectsIncompatibleExistingTable(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE media(id INTEGER PRIMARY KEY,file_unique_id TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{DB: db}
+	if err := s.Migrate(context.Background()); err == nil {
+		t.Fatal("accepted schema without media uniqueness")
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE name='posts'").Scan(&count); err != nil || count != 0 {
+		t.Fatal(count, err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/WillowWorks-io/libsql-client-go/libsql"
 	"handler/internal/domain"
@@ -17,6 +18,8 @@ import (
 var initialSchema string
 
 type Store struct{ DB *sql.DB }
+
+var errMigrationRequired = errors.New("schema migration required")
 
 func Open(databaseURL, token string) (*Store, error) {
 	connector, err := libsql.NewConnector(databaseURL, libsql.WithAuthToken(token))
@@ -32,16 +35,10 @@ func Open(databaseURL, token string) (*Store, error) {
 func (s *Store) Close() error { return s.DB.Close() }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	var version int
-	if err := s.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		migrationFailure(ctx, "version_read", err)
+	if err := s.Check(ctx); err == nil {
+		return nil
+	} else if !errors.Is(err, errMigrationRequired) {
 		return err
-	}
-	if version > 1 {
-		return errors.New("unsupported schema version")
-	}
-	if version == 1 {
-		return s.Check(ctx)
 	}
 	if _, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
 		migrationFailure(ctx, "foreign_keys_enable", err)
@@ -66,7 +63,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			conn.ExecContext(cleanup, "ROLLBACK")
 		}
 	}()
-	statements := append(strings.Split(initialSchema, ";"), "PRAGMA user_version=1", "COMMIT")
+	statements := append(strings.Split(initialSchema, ";"), "COMMIT")
 	for i, statement := range statements {
 		if strings.TrimSpace(statement) == "" {
 			continue
@@ -96,12 +93,38 @@ func migrationFailure(ctx context.Context, phase string, err error) {
 }
 
 func (s *Store) Check(ctx context.Context) error {
-	var version int
-	if err := s.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+	// Turso forbids writing user_version. Validate the actual schema instead of
+	// adding a fourth bookkeeping table or assuming CREATE IF NOT EXISTS is enough.
+	names := []string{"media", "posts", "votes", "idx_posts_media_id"}
+	definitions := strings.Split(initialSchema, ";")
+	expected := make(map[string]string, len(names))
+	for i, name := range names {
+		expected[name] = normalizeSchema(definitions[i])
+	}
+	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE (type='table' AND name IN ('media','posts','votes')) OR (type='index' AND name='idx_posts_media_id')`)
+	if err != nil {
 		return err
 	}
-	if version != 1 {
-		return errors.New("schema migration required")
+	found := 0
+	for objects.Next() {
+		var name, definition string
+		if err := objects.Scan(&name, &definition); err != nil {
+			objects.Close()
+			return err
+		}
+		if expected[name] != normalizeSchema(definition) {
+			objects.Close()
+			return errors.New("unsupported schema definition")
+		}
+		found++
+	}
+	err = objects.Err()
+	objects.Close()
+	if err != nil {
+		return err
+	}
+	if found != len(names) {
+		return errMigrationRequired
 	}
 	rows, err := s.DB.QueryContext(ctx, "PRAGMA foreign_key_check")
 	if err != nil {
@@ -112,6 +135,27 @@ func (s *Store) Check(ctx context.Context) error {
 		return errors.New("foreign key violation")
 	}
 	return rows.Err()
+}
+
+func normalizeSchema(sql string) string {
+	var normalized strings.Builder
+	quoted := false
+	for _, char := range sql {
+		if char == '\'' {
+			quoted = !quoted
+		}
+		if !quoted {
+			if unicode.IsSpace(char) {
+				continue
+			}
+			char = unicode.ToLower(char)
+		}
+		normalized.WriteRune(char)
+	}
+	sql = normalized.String()
+	sql = strings.Replace(sql, "createtableifnotexists", "createtable", 1)
+	sql = strings.Replace(sql, "createindexifnotexists", "createindex", 1)
+	return strings.TrimSuffix(sql, ";")
 }
 
 const postColumns = "id,media_id,chat_id,source_message_id,COALESCE(bot_message_id,0),state"

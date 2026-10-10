@@ -13,7 +13,7 @@ import (
 func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "commit", true: "rollback"}[fail], func(t *testing.T) {
-			version, pendingVersion := 0, 0
+			version := 0
 			transaction, committed, rolledBack := false, false, false
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var input struct {
@@ -48,17 +48,22 @@ func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 					switch {
 					case sql == "BEGIN IMMEDIATE":
 						transaction = true
-					case sql == "PRAGMA user_version":
-						cols = []any{map[string]any{"name": "user_version"}}
-						rows = []any{[]any{map[string]any{"type": "integer", "value": map[int]string{0: "0", 1: "1"}[version]}}}
-					case sql == "PRAGMA user_version=1":
-						pendingVersion = 1
+					case strings.Contains(sql, "FROM sqlite_master"):
+						cols = []any{map[string]any{"name": "name"}, map[string]any{"name": "sql"}}
+						if version == 1 {
+							for i, name := range []string{"media", "posts", "votes", "idx_posts_media_id"} {
+								definition := strings.Split(initialSchema, ";")[i]
+								rows = append(rows, []any{map[string]any{"type": "text", "value": name}, map[string]any{"type": "text", "value": definition}})
+							}
+						}
+					case strings.HasPrefix(sql, "PRAGMA user_version="):
+						results = append(results, map[string]any{"type": "error", "error": map[string]any{"message": "writing user_version is not allowed"}})
+						continue
 					case sql == "COMMIT":
-						version = pendingVersion
+						version = 1
 						transaction = false
 						committed = true
 					case sql == "ROLLBACK":
-						pendingVersion = 0
 						transaction = false
 						rolledBack = true
 					case fail && strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS posts"):

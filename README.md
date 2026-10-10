@@ -55,7 +55,8 @@ go run ./cmd/migrate
 `{"action":"probe"}`, `{"action":"migrate"}` или `{"action":"check"}`.
 Для этого задайте `CRINGEMETER_ADMIN_SECRET`. Endpoint не принимает SQL и
 не возвращает данные или секреты. Миграция создаёт три таблицы и устанавливает
-`PRAGMA user_version=1`; повторный запуск проверяет схему.
+проверяет их определения; повторный запуск проверяет схему. Запись
+`PRAGMA user_version` не используется: целевая Turso её запрещает.
 
 Deployment выполняется через Vercel MCP из конкретного commit в `main`.
 Сначала проверяются Preview, подключение и тесты, затем Production, миграция
