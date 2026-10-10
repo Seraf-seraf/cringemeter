@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"handler/internal/adapters/turso"
 	"handler/internal/domain"
 	_ "modernc.org/sqlite"
@@ -20,6 +21,8 @@ type fakeTelegram struct {
 	edits              []domain.Post
 	counts             []domain.Counts
 	answers            int
+	answerText         string
+	answerAlert        bool
 	editErr, answerErr error
 	mu                 sync.Mutex
 	copies, deletes    int
@@ -168,10 +171,12 @@ func TestExpiredClaimDoesNotCopy(t *testing.T) {
 	}
 }
 
-func (f *fakeTelegram) Answer(context.Context, string, string) error {
+func (f *fakeTelegram) Answer(_ context.Context, _ string, text string, alert bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.answers++
+	f.answerText = text
+	f.answerAlert = alert
 	return f.answerErr
 }
 func (f *fakeTelegram) Edit(_ context.Context, p domain.Post, c domain.Counts) error {
@@ -364,5 +369,31 @@ func TestDatabaseFailureAfterCopyPreservesSource(t *testing.T) {
 	p, _ = store.Post(ctx, 1)
 	if p.State != domain.CopyUnknown || tg.copies != 1 || tg.deletes != 0 {
 		t.Fatal(p, tg)
+	}
+}
+
+func TestSelfVoteShowsAlertWithoutChangingCountsOrKeyboard(t *testing.T) {
+	for _, value := range []int{0, 1} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			s, store, tg := setup(t)
+			ctx := context.Background()
+			in := input(1)
+			owner := int64(50)
+			in.UploaderID = &owner
+			if err := s.Publish(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			edits := len(tg.edits)
+			if err := s.RecordVote(ctx, domain.Ballot{CallbackID: "self", PostID: 1, ChatID: -100, MessageID: 101, UserID: 50, Vote: value}); err != nil {
+				t.Fatal(err)
+			}
+			if tg.answerText != "Нельзя голосовать за своё видео" || !tg.answerAlert || len(tg.edits) != edits {
+				t.Fatal(tg.answerText, tg.answerAlert, tg.edits)
+			}
+			counts, err := store.Counts(ctx, 1)
+			if err != nil || counts.Total() != 0 {
+				t.Fatal(counts, err)
+			}
+		})
 	}
 }

@@ -56,7 +56,7 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 		var ok bool
 		ballot, ok = telegram.Ballot(u.CallbackQuery)
 		if !ok {
-			return client.Answer(ctx, u.CallbackQuery.ID, "Кнопка недоступна")
+			return client.Answer(ctx, u.CallbackQuery.ID, "Кнопка недоступна", false)
 		}
 	} else {
 		return nil

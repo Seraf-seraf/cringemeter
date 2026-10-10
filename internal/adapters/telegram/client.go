@@ -126,8 +126,8 @@ func Incoming(m *tg.Message) (domain.Incoming, bool) {
 	return in, in.UniqueID != ""
 }
 
-func (c *Client) Answer(ctx context.Context, id, text string) error {
-	return c.Call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
+func (c *Client) Answer(ctx context.Context, id, text string, showAlert bool) error {
+	return c.Call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text, "show_alert": showAlert}, nil)
 }
 
 func (c *Client) Edit(ctx context.Context, p domain.Post, counts domain.Counts) error {
@@ -155,10 +155,10 @@ func Ballot(q *tg.CallbackQuery) (domain.Ballot, bool) {
 
 func TopText(ranks []domain.Rank) string {
 	if len(ranks) == 0 {
-		return "👑 Короли кринжа\nПока нет голосов «Кринж» за видео пользователей."
+		return "👑 Короли кринжа\nПока нет пользователей с положительным счётом."
 	}
 	var text strings.Builder
-	text.WriteString("<b>👑 Короли кринжа</b>\n")
+	text.WriteString("<b>👑 Короли кринжа</b>\nСчёт: Кринж − Некринж\n")
 	for i, r := range ranks {
 		name := r.Name
 		if name == "" {

@@ -20,6 +20,9 @@ func TestAdministrativeBoundary(t *testing.T) {
 		{"GET", "s", `{"action":"probe"}`, 405, false},
 		{"POST", "", `{"action":"migrate"}`, 401, false},
 		{"POST", "wrong", `{"action":"migrate"}`, 401, false},
+		{"POST", "", `{"action":"remove_self_votes"}`, 401, false},
+		{"POST", "wrong", `{"action":"remove_self_votes"}`, 401, false},
+		{"POST", "s", `{"action":"remove_self_votes","query":"DELETE FROM author_votes"}`, 400, false},
 		{"POST", "s", `{"action":"drop"}`, 400, false},
 		{"POST", "s", `{"action":"probe","query":"DROP TABLE media"}`, 400, false},
 		{"POST", "s", `{"action":"probe"}{}`, 400, false},
@@ -53,5 +56,24 @@ func TestCheckRequiresMigration(t *testing.T) {
 	s := &turso.Store{DB: db}
 	if err := s.Check(context.Background()); err == nil {
 		t.Fatal("unmigrated database accepted")
+	}
+}
+
+func TestExplicitSelfVoteCleanupRequiresCurrentSchemaAndReportsCount(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "cleanup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &turso.Store{DB: db}
+	if err = store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Secret: "s", Open: func() (*turso.Store, error) { return store, nil }}
+	request := httptest.NewRequest("POST", "/api/operations", strings.NewReader(`{"action":"remove_self_votes"}`))
+	request.Header.Set("X-Cringemeter-Admin-Secret", "s")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, request)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"removed":0`) {
+		t.Fatal(w.Code, w.Body.String())
 	}
 }

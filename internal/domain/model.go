@@ -5,6 +5,7 @@ import "errors"
 var ErrNotFound = errors.New("publication not found")
 var ErrBusy = errors.New("publication is being copied")
 var ErrInvalid = errors.New("invalid input")
+var ErrSelfVote = errors.New("self vote forbidden")
 var ErrConflict = errors.New("publication state conflict")
 
 const (

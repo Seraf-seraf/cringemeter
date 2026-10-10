@@ -38,7 +38,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Action string `json:"action"`
 	}
-	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate") {
+	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes") {
 		http.Error(w, "invalid action", 400)
 		return
 	}
@@ -57,6 +57,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = s.Migrate(ctx)
 	case "check":
 		err = s.Check(ctx)
+	case "remove_self_votes":
+		var removed int64
+		removed, err = s.RemoveSelfVotes(ctx)
+		report["removed"] = removed
 	case "probe":
 		var one int
 		err = s.DB.QueryRowContext(ctx, "SELECT 1").Scan(&one)

@@ -22,12 +22,23 @@ var initialSchema string
 //go:embed migrations/002_user_ranking.sql
 var rankingSchema string
 
-func schemaObjects() map[string]string {
+//go:embed migrations/003_net_scores.sql
+var netSchema string
+
+func legacySchemaObjects() map[string]string {
 	names := []string{"media", "posts", "votes", "idx_posts_media_id", "author_votes", "score_positions", "user_scores", "rank_vote_insert", "rank_vote_update", "rank_post_insert", "legacy_vote_insert", "legacy_vote_update"}
 	definitions := append(strings.Split(strings.TrimSpace(initialSchema), ";")[:4], strings.Split(strings.TrimSpace(rankingSchema), "\n-- statement\n")...)
 	objects := make(map[string]string, len(names))
 	for i, name := range names {
 		objects[name] = definitions[i]
+	}
+	return objects
+}
+
+func schemaObjects() map[string]string {
+	objects := legacySchemaObjects()
+	for i, name := range []string{"score_positions", "user_scores", "deny_self_vote_insert", "deny_self_vote_update"} {
+		objects[name] = strings.Split(netSchema, "\n-- statement\n")[i]
 	}
 	return objects
 }
@@ -52,8 +63,14 @@ func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.Check(ctx); err == nil {
 		return nil
-	} else if !errors.Is(err, errMigrationRequired) {
-		return err
+	}
+	// Accept exactly the known previous schema; unrelated definitions stay rejected.
+	bootstrap := false
+	if err := s.checkSchema(ctx, legacySchemaObjects()); err != nil {
+		if !errors.Is(err, errMigrationRequired) {
+			return err
+		}
+		bootstrap = true
 	}
 	if _, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
 		migrationFailure(ctx, "foreign_keys_enable", err)
@@ -79,14 +96,32 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}()
 	ranking := strings.Split(rankingSchema, "\n-- statement\n")
-	statements := append(strings.Split(initialSchema, ";"), ranking[:3]...)
-	// The user requested resetting legacy shared votes. Keep media and authors.
-	// New author_votes are never cleared, including recovery of a missing trigger.
-	statements = append(statements, "DELETE FROM votes")
-	statements = append(statements, `INSERT INTO score_positions(chat_id,user_id,score)
+	var statements []string
+	if bootstrap {
+		statements = append(statements, strings.Split(initialSchema, ";")...)
+		statements = append(statements, ranking[:3]...)
+		statements = append(statements, "DELETE FROM votes", `INSERT INTO score_positions(chat_id,user_id,score)
  SELECT s.chat_id,s.user_id,s.score FROM user_scores s WHERE true
  ORDER BY s.chat_id,s.user_id ON CONFLICT(chat_id,user_id) DO NOTHING`)
-	statements = append(statements, ranking[3:]...)
+		statements = append(statements, ranking[3:]...)
+	}
+	// Rebuild only score metadata. Keep vote rows, publication IDs and the
+	// established tie order; changing formulas cannot reconstruct past net scores.
+	net := strings.Split(netSchema, "\n-- statement\n")
+	statements = append(statements,
+		"DROP TRIGGER rank_vote_insert", "DROP TRIGGER rank_vote_update", "DROP TRIGGER rank_post_insert",
+		"DROP VIEW user_scores",
+		"ALTER TABLE score_positions RENAME TO score_positions_before_balance",
+		net[0], net[1],
+		`INSERT INTO score_positions(id,chat_id,user_id,score)
+ SELECT p.id,s.chat_id,s.user_id,s.score FROM score_positions_before_balance p
+ JOIN user_scores s ON s.chat_id=p.chat_id AND s.user_id=p.user_id ORDER BY p.id`,
+		`INSERT INTO score_positions(chat_id,user_id,score)
+ SELECT s.chat_id,s.user_id,s.score FROM user_scores s WHERE true
+ ON CONFLICT(chat_id,user_id) DO NOTHING`,
+		"DROP TABLE score_positions_before_balance")
+	statements = append(statements, ranking[3:6]...)
+	statements = append(statements, net[2:]...)
 	statements = append(statements, "COMMIT")
 
 	for i, statement := range statements {
@@ -117,10 +152,11 @@ func migrationFailure(ctx context.Context, phase string, err error) {
 	slog.ErrorContext(ctx, "migration failed", "phase", phase, "code", code)
 }
 
-func (s *Store) Check(ctx context.Context) error {
+func (s *Store) Check(ctx context.Context) error { return s.checkSchema(ctx, schemaObjects()) }
+
+func (s *Store) checkSchema(ctx context.Context, expected map[string]string) error {
 	// Turso forbids writing user_version: validate the actual objects.
-	expected := schemaObjects()
-	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update')`)
+	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update')`)
 	if err != nil {
 		return err
 	}
@@ -130,6 +166,13 @@ func (s *Store) Check(ctx context.Context) error {
 		if err := objects.Scan(&name, &definition); err != nil {
 			objects.Close()
 			return err
+		}
+		if _, owned := expected[name]; !owned {
+			if normalizeSchema(schemaObjects()[name]) != normalizeSchema(definition) {
+				objects.Close()
+				return errors.New("unsupported schema definition")
+			}
+			continue
 		}
 		if normalizeSchema(expected[name]) != normalizeSchema(definition) {
 			objects.Close()
@@ -259,16 +302,31 @@ func (s *Store) Vote(ctx context.Context, postID, chatID int64, messageID int, u
 		return 0, domain.ErrInvalid
 	}
 	var mediaID int64
-	err := s.DB.QueryRowContext(ctx, `INSERT INTO author_votes(media_id,uploader_user_id,user_id,vote,updated_at) SELECT media_id,COALESCE(uploader_user_id,0),?,?,? FROM posts WHERE id=? AND chat_id=? AND bot_message_id=? AND state IN ('copied','done') ON CONFLICT(media_id,uploader_user_id,user_id) DO UPDATE SET vote=excluded.vote,updated_at=excluded.updated_at RETURNING media_id`, userID, vote, now, postID, chatID, messageID).Scan(&mediaID)
+	err := s.DB.QueryRowContext(ctx, `INSERT INTO author_votes(media_id,uploader_user_id,user_id,vote,updated_at) SELECT media_id,COALESCE(uploader_user_id,0),?,?,? FROM posts WHERE id=? AND chat_id=? AND bot_message_id=? AND state IN ('copied','done') AND COALESCE(uploader_user_id,0)!=? ON CONFLICT(media_id,uploader_user_id,user_id) DO UPDATE SET vote=excluded.vote,updated_at=excluded.updated_at RETURNING media_id`, userID, vote, now, postID, chatID, messageID, userID).Scan(&mediaID)
 	if errors.Is(err, sql.ErrNoRows) {
+		var owner int64
+		lookup := s.DB.QueryRowContext(ctx, `SELECT COALESCE(uploader_user_id,0) FROM posts WHERE id=? AND chat_id=? AND bot_message_id=? AND state IN ('copied','done')`, postID, chatID, messageID).Scan(&owner)
+		if errors.Is(lookup, sql.ErrNoRows) {
+			return 0, domain.ErrNotFound
+		}
+		if lookup != nil {
+			return 0, lookup
+		}
+		if owner == userID {
+			return 0, domain.ErrSelfVote
+		}
 		return 0, domain.ErrNotFound
 	}
+	if err != nil && strings.Contains(err.Error(), "self_vote_forbidden") {
+		return 0, domain.ErrSelfVote
+	}
+
 	return mediaID, err
 }
 
 func (s *Store) Counts(ctx context.Context, postID int64) (domain.Counts, error) {
 	var c domain.Counts
-	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(vote),0),COUNT(*)-COALESCE(SUM(vote),0) FROM author_votes v JOIN posts p ON p.media_id=v.media_id AND COALESCE(p.uploader_user_id,0)=v.uploader_user_id WHERE p.id=?`, postID).Scan(&c.Cringe, &c.NonCringe)
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(vote),0),COUNT(*)-COALESCE(SUM(vote),0) FROM author_votes v JOIN posts p ON p.media_id=v.media_id AND COALESCE(p.uploader_user_id,0)=v.uploader_user_id WHERE p.id=? AND v.user_id!=v.uploader_user_id`, postID).Scan(&c.Cringe, &c.NonCringe)
 	return c, err
 }
 
@@ -311,4 +369,17 @@ func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
 func (s *Store) Unavailable(ctx context.Context, id int64) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE posts SET bot_message_id=NULL WHERE id=? AND state='done'`, id)
 	return err
+}
+
+// Explicit administrative cleanup, separate from schema migrations. Self votes
+// are already excluded from both counters and net scores, so no rank changes.
+func (s *Store) RemoveSelfVotes(ctx context.Context) (int64, error) {
+	if err := s.Check(ctx); err != nil {
+		return 0, err
+	}
+	result, err := s.DB.ExecContext(ctx, "DELETE FROM author_votes WHERE user_id=uploader_user_id")
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

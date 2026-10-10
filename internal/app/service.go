@@ -29,7 +29,7 @@ type Repository interface {
 type Messenger interface {
 	Copy(context.Context, domain.Post, domain.Counts) (int, error)
 	Delete(context.Context, int64, int) error
-	Answer(context.Context, string, string) error
+	Answer(context.Context, string, string, bool) error
 	Edit(context.Context, domain.Post, domain.Counts) error
 	SendTop(context.Context, domain.Group, []domain.Rank) error
 }
@@ -108,21 +108,25 @@ func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
 
 func (s *Service) RecordVote(ctx context.Context, b domain.Ballot) error {
 	mediaID, err := s.Store.Vote(ctx, b.PostID, b.ChatID, b.MessageID, b.UserID, b.Vote, s.Now().Unix())
+	if errors.Is(err, domain.ErrSelfVote) {
+		s.answer(ctx, b.CallbackID, "Нельзя голосовать за своё видео", true)
+		return nil
+	}
 	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrInvalid) {
-		s.answer(ctx, b.CallbackID, "Кнопка недоступна")
+		s.answer(ctx, b.CallbackID, "Кнопка недоступна", false)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	s.answer(ctx, b.CallbackID, "Голос учтён")
+	s.answer(ctx, b.CallbackID, "Голос учтён", false)
 	p := domain.Post{ID: b.PostID, MediaID: mediaID, ChatID: b.ChatID, BotMessageID: b.MessageID}
 	s.sync(ctx, p)
 	return nil
 }
 
-func (s *Service) answer(ctx context.Context, id, text string) {
-	if err := s.Telegram.Answer(ctx, id, text); err != nil {
+func (s *Service) answer(ctx context.Context, id, text string, showAlert bool) {
+	if err := s.Telegram.Answer(ctx, id, text, showAlert); err != nil {
 		slog.WarnContext(ctx, "callback answer failed", "phase", "answer", "code", "answer_failed")
 	}
 }

@@ -111,7 +111,7 @@ func TestUserTopEscapesNamesAndShowsAbsoluteScore(t *testing.T) {
 			t.Fatal(text, want)
 		}
 	}
-	if !strings.Contains(TopText(nil), "Пока нет голосов") {
+	if !strings.Contains(TopText(nil), "Пока нет пользователей") {
 		t.Fatal("empty top")
 	}
 }
@@ -183,5 +183,31 @@ func TestTopStillSendsWhenOptionalNameLookupTimesOut(t *testing.T) {
 		}
 	default:
 		t.Fatal("ranking was not sent")
+	}
+}
+
+func TestSelfVoteWarningIsTelegramAlert(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bot123:test/answerCallbackQuery" {
+			t.Error(r.URL.Path)
+		}
+		var payload struct {
+			ID    string `json:"callback_query_id"`
+			Text  string `json:"text"`
+			Alert bool   `json:"show_alert"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		if payload.ID != "self" || payload.Text != "Нельзя голосовать за своё видео" || !payload.Alert {
+			t.Error(payload)
+		}
+		w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	c := New("123:test")
+	c.BaseURL = server.URL
+	if err := c.Answer(context.Background(), "self", "Нельзя голосовать за своё видео", true); err != nil {
+		t.Fatal(err)
 	}
 }
