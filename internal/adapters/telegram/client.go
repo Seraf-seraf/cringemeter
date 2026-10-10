@@ -81,7 +81,7 @@ func Keyboard(postID int64, counts domain.Counts) tg.InlineKeyboardMarkup {
 	id := strconv.FormatInt(postID, 10)
 	return tg.NewInlineKeyboardMarkup(
 		tg.NewInlineKeyboardRow(tg.NewInlineKeyboardButtonData("🤡Кринж · "+strconv.FormatInt(counts.Cringe, 10), "v:"+id+":1")),
-		tg.NewInlineKeyboardRow(tg.NewInlineKeyboardButtonData("Некринж🙂‍↕️ · "+strconv.FormatInt(counts.NonCringe, 10), "v:"+id+":0")),
+		tg.NewInlineKeyboardRow(tg.NewInlineKeyboardButtonData("🙂‍↕️Некринж · "+strconv.FormatInt(counts.NonCringe, 10), "v:"+id+":0")),
 	)
 }
 

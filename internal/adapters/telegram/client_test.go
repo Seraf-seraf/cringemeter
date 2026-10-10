@@ -34,7 +34,7 @@ func TestCopySendsMessageReferenceAndKeyboard(t *testing.T) {
 			return
 		}
 		cringe, nonCringe := rows[0][0], rows[1][0]
-		if cringe.Text != "🤡Кринж · 2" || nonCringe.Text != "Некринж🙂‍↕️ · 3" || cringe.CallbackData == nil || nonCringe.CallbackData == nil || *cringe.CallbackData != "v:9:1" || *nonCringe.CallbackData != "v:9:0" {
+		if cringe.Text != "🤡Кринж · 2" || nonCringe.Text != "🙂‍↕️Некринж · 3" || cringe.CallbackData == nil || nonCringe.CallbackData == nil || *cringe.CallbackData != "v:9:1" || *nonCringe.CallbackData != "v:9:0" {
 			t.Error(rows)
 		}
 		w.Write([]byte(`{"ok":true,"result":{"message_id":101}}`))
