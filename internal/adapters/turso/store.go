@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/WillowWorks-io/libsql-client-go/libsql"
@@ -32,6 +33,7 @@ func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) Migrate(ctx context.Context) error {
 	var version int
 	if err := s.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		migrationFailure(ctx, "version_read", err)
 		return err
 	}
 	if version > 1 {
@@ -43,9 +45,22 @@ func (s *Store) Migrate(ctx context.Context) error {
 	// One request runs the migration with explicit SQL transaction boundaries.
 	_, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys=ON; BEGIN IMMEDIATE; "+initialSchema+" PRAGMA user_version=1; COMMIT;")
 	if err != nil {
+		migrationFailure(ctx, "schema_execute", err)
 		return err
 	}
 	return s.Check(ctx)
+}
+
+// Only allowlisted categories leave the adapter; driver errors may contain URLs.
+func migrationFailure(ctx context.Context, phase string, err error) {
+	code := "database_failed"
+	for _, candidate := range []string{"SQLITE_AUTH", "SQLITE_READONLY", "SQLITE_BUSY", "SQLITE_ERROR", "syntax error", "failed to parse", "not authorized", "unsupported"} {
+		if strings.Contains(err.Error(), candidate) {
+			code = candidate
+			break
+		}
+	}
+	slog.ErrorContext(ctx, "migration failed", "phase", phase, "code", code)
 }
 
 func (s *Store) Check(ctx context.Context) error {
