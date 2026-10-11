@@ -102,6 +102,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), RequestTimeout)
 	defer cancel()
+	if h.Config.DebugUploads && u.Message != nil {
+		logUpload(ctx, u.UpdateID, u.Message, envelope.Message)
+	}
 	if err := h.Process(ctx, u); err != nil {
 		slog.ErrorContext(ctx, "update failed", "update_id", u.UpdateID, "phase", "process", "code", "processing_failed")
 		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)

@@ -15,6 +15,7 @@ const RequestTimeout = 30 * time.Second
 
 type Handler struct {
 	Secret string
+	ChatID int64
 	Open   func() (*turso.Store, error)
 }
 
@@ -38,8 +39,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Action string `json:"action"`
 	}
-	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes") {
+	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes" && input.Action != "diagnose_uploads") {
 		http.Error(w, "invalid action", 400)
+		return
+	}
+	if input.Action == "diagnose_uploads" && h.ChatID >= 0 {
+		http.Error(w, "invalid diagnostic chat", 400)
 		return
 	}
 
@@ -53,6 +58,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.Close()
 	report := map[string]any{"ok": true, "action": input.Action}
 	switch input.Action {
+	case "diagnose_uploads":
+		report["uploads"], err = s.RecentUploads(ctx, h.ChatID)
 	case "migrate":
 		err = s.Migrate(ctx)
 	case "check":

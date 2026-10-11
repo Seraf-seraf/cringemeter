@@ -6,10 +6,12 @@ import (
 	"handler/internal/adapters/turso"
 	"net/http"
 	"os"
+	"strconv"
 )
 
 func Operations(w http.ResponseWriter, r *http.Request) {
-	operations.Handler{Secret: os.Getenv("CRINGEMETER_ADMIN_SECRET"), Open: func() (*turso.Store, error) {
+	chatID, _ := strconv.ParseInt(os.Getenv("TELEGRAM_CHAT_ID"), 10, 64)
+	operations.Handler{Secret: os.Getenv("CRINGEMETER_ADMIN_SECRET"), ChatID: chatID, Open: func() (*turso.Store, error) {
 		databaseURL, token := os.Getenv("TURSO_DATABASE_URL"), os.Getenv("TURSO_AUTH_TOKEN")
 		if databaseURL == "" || token == "" {
 			return nil, errors.New("database settings missing")

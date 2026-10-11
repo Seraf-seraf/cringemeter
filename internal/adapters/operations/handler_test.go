@@ -22,6 +22,11 @@ func TestAdministrativeBoundary(t *testing.T) {
 		{"POST", "wrong", `{"action":"migrate"}`, 401, false},
 		{"POST", "", `{"action":"remove_self_votes"}`, 401, false},
 		{"POST", "wrong", `{"action":"remove_self_votes"}`, 401, false},
+		{"POST", "", `{"action":"diagnose_uploads"}`, 401, false},
+		{"POST", "wrong", `{"action":"diagnose_uploads"}`, 401, false},
+		{"POST", "s", `{"action":"diagnose_uploads","chat_id":-200}`, 400, false},
+		{"POST", "s", `{"action":"diagnose_uploads","query":"SELECT * FROM votes"}`, 400, false},
+		{"POST", "s", `{"action":"diagnose_uploads"}`, 400, false},
 		{"POST", "s", `{"action":"remove_self_votes","query":"DELETE FROM author_votes"}`, 400, false},
 		{"POST", "s", `{"action":"drop"}`, 400, false},
 		{"POST", "s", `{"action":"probe","query":"DROP TABLE media"}`, 400, false},
@@ -56,6 +61,29 @@ func TestCheckRequiresMigration(t *testing.T) {
 	s := &turso.Store{DB: db}
 	if err := s.Check(context.Background()); err == nil {
 		t.Fatal("unmigrated database accepted")
+	}
+}
+
+func TestUploadDiagnosticsReturnFixedReadOnlyChatReport(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "diagnostic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &turso.Store{DB: db}
+	t.Cleanup(func() { s.Close() })
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO media(id,file_unique_id) VALUES(1,'v'); INSERT INTO posts(media_id,chat_id,source_message_id,uploader_user_id,media_type) VALUES(1,-100,7,42,'video'),(1,-200,8,43,'video')`); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Secret: "s", ChatID: -100, Open: func() (*turso.Store, error) { return s, nil }}
+	r := httptest.NewRequest("POST", "/api/operations", strings.NewReader(`{"action":"diagnose_uploads"}`))
+	r.Header.Set("X-Cringemeter-Admin-Secret", "s")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"source_message_id":7`) || strings.Contains(w.Body.String(), `"source_message_id":8`) {
+		t.Fatal(w.Code, w.Body.String())
 	}
 }
 

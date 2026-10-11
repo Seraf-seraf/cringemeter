@@ -14,10 +14,12 @@ type Config struct {
 	ChatID        int64
 	DatabaseURL   string
 	AuthToken     string
+	DebugUploads  bool
 }
 
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{BotToken: getenv("TELEGRAM_BOT_TOKEN"), WebhookSecret: getenv("TELEGRAM_WEBHOOK_SECRET"), DatabaseURL: getenv("TURSO_DATABASE_URL"), AuthToken: getenv("TURSO_AUTH_TOKEN")}
+	c.DebugUploads = getenv("TELEGRAM_DEBUG_UPLOADS") == "1"
 	parts := strings.Split(c.BotToken, ":")
 	if len(parts) != 2 || parts[1] == "" {
 		return Config{}, errors.New("invalid TELEGRAM_BOT_TOKEN")
