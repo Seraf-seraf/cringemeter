@@ -23,6 +23,10 @@ func TestAdministrativeBoundary(t *testing.T) {
 		{"POST", "s", `{"action":"register_downloader","bot_id":99}`, 400, false},
 		{"POST", "", `{"action":"migrate"}`, 401, false},
 		{"POST", "wrong", `{"action":"migrate"}`, 401, false},
+		{"POST", "", `{"action":"remove_bot_votes"}`, 401, false},
+		{"POST", "wrong", `{"action":"remove_bot_votes"}`, 401, false},
+		{"POST", "s", `{"action":"remove_bot_votes","bot_id":42}`, 400, false},
+		{"POST", "s", `{"action":"remove_bot_votes","query":"DELETE FROM author_votes"}`, 400, false},
 		{"POST", "", `{"action":"remove_self_votes"}`, 401, false},
 		{"POST", "wrong", `{"action":"remove_self_votes"}`, 401, false},
 		{"POST", "", `{"action":"diagnose_uploads"}`, 401, false},
@@ -136,5 +140,37 @@ func TestExplicitSelfVoteCleanupRequiresCurrentSchemaAndReportsCount(t *testing.
 	h.ServeHTTP(w, request)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"removed":0`) {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestBotVoteCleanupReportsOnlyRegisteredBotOwners(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bot-cleanup.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &turso.Store{DB: db}
+	if err = s.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO media(id,file_unique_id) VALUES(1,'same'); INSERT INTO posts(media_id,chat_id,source_message_id,uploader_user_id,media_type) VALUES(1,-100,1,99,'video'),(1,-100,2,42,'video'); INSERT INTO bot_senders(user_id) VALUES(99); INSERT INTO author_votes(media_id,uploader_user_id,user_id,vote,updated_at) VALUES(1,99,50,1,10),(1,42,50,1,10)`); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Secret: "s", Open: func() (*turso.Store, error) { return s, nil }}
+	req := httptest.NewRequest("POST", "/api/operations", strings.NewReader(`{"action":"remove_bot_votes"}`))
+	req.Header.Set("X-Cringemeter-Admin-Secret", "s")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"removed":1`) || !strings.Contains(w.Body.String(), `"remaining_bot_votes":0`) || !strings.Contains(w.Body.String(), `"human_votes_before":1`) || !strings.Contains(w.Body.String(), `"human_votes_after":1`) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var owner int64
+	if err = db.QueryRow(`SELECT uploader_user_id FROM author_votes`).Scan(&owner); err != nil || owner != 42 {
+		t.Fatal(owner, err)
 	}
 }

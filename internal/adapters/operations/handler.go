@@ -40,7 +40,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Action string `json:"action"`
 	}
-	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes" && input.Action != "diagnose_uploads" && input.Action != "register_downloader") {
+	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes" && input.Action != "diagnose_uploads" && input.Action != "register_downloader" && input.Action != "remove_bot_votes") {
 		http.Error(w, "invalid action", 400)
 		return
 	}
@@ -74,6 +74,13 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = s.Migrate(ctx)
 	case "check":
 		err = s.Check(ctx)
+	case "remove_bot_votes":
+		var cleanup turso.BotVoteCleanup
+		cleanup, err = s.RemoveBotVotes(ctx)
+		report["removed"] = cleanup.Removed
+		report["remaining_bot_votes"] = cleanup.Remaining
+		report["human_votes_before"] = cleanup.HumanBefore
+		report["human_votes_after"] = cleanup.HumanAfter
 	case "remove_self_votes":
 		var removed int64
 		removed, err = s.RemoveSelfVotes(ctx)
