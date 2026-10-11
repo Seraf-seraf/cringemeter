@@ -14,9 +14,10 @@ import (
 const RequestTimeout = 30 * time.Second
 
 type Handler struct {
-	Secret string
-	ChatID int64
-	Open   func() (*turso.Store, error)
+	Secret          string
+	ChatID          int64
+	DownloaderBotID int64
+	Open            func() (*turso.Store, error)
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +40,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Action string `json:"action"`
 	}
-	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes" && input.Action != "diagnose_uploads") {
+	if err := httpjson.DecodeObject(r.Body, &input); err != nil || (input.Action != "probe" && input.Action != "check" && input.Action != "migrate" && input.Action != "remove_self_votes" && input.Action != "diagnose_uploads" && input.Action != "register_downloader") {
 		http.Error(w, "invalid action", 400)
 		return
 	}
@@ -48,6 +49,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if input.Action == "register_downloader" && h.DownloaderBotID <= 0 {
+		http.Error(w, "invalid downloader", 400)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), RequestTimeout)
 	defer cancel()
 	s, err := h.Open()
@@ -60,6 +65,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch input.Action {
 	case "diagnose_uploads":
 		report["uploads"], err = s.RecentUploads(ctx, h.ChatID)
+		if err == nil {
+			report["pending_requests"], err = s.PendingRequests(ctx, h.ChatID)
+		}
+	case "register_downloader":
+		err = s.RegisterDownloader(ctx, h.DownloaderBotID)
 	case "migrate":
 		err = s.Migrate(ctx)
 	case "check":

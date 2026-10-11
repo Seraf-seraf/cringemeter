@@ -32,10 +32,12 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 	var incoming domain.Incoming
 	var ballot domain.Ballot
 	var group domain.Group
-	var isMedia, isTop bool
+	var isMedia, isTop, isRequest bool
+	var request domain.VideoRequest
 	if u.Message != nil {
-		incoming, isMedia = telegram.Incoming(u.Message)
-		if !isMedia {
+		incoming, isMedia = telegram.DownloadedIncoming(u.Message, c.DownloaderBotID)
+		request, isRequest = telegram.LinkRequest(u.Message)
+		if !isMedia && !isRequest {
 			address, ok := telegram.TopCommand(u.Message)
 			if !ok {
 				return nil
@@ -66,6 +68,9 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 		return err
 	}
 	defer store.Close()
+	if isRequest && !isMedia {
+		return store.RememberRequest(ctx, request)
+	}
 	service := app.Service{Store: store, Telegram: client, Now: time.Now}
 	if isMedia {
 		return service.Publish(ctx, incoming)

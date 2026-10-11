@@ -67,6 +67,9 @@ func TestUploadDiagnosticCapturesReplyWithoutMessageContent(t *testing.T) {
 	if strings.Contains(output.String(), "private") || strings.Contains(output.String(), "https://") {
 		t.Fatal("message content leaked", output.String())
 	}
+	if logged["guest_caller_id"] != float64(42) || logged["guest_caller_chat_id"] != float64(-100) || logged["filename_youtube_id"] != "abcdefghijk" || logged["inline_button_count"] != float64(1) {
+		t.Fatal("missing correlation fields", logged)
+	}
 	for _, field := range []string{"youtube_video_ids", "reply_youtube_video_ids"} {
 		values, ok := logged[field].([]any)
 		if !ok || len(values) < 1 || values[0] != "abcdefghijk" {

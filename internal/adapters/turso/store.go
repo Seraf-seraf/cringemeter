@@ -25,6 +25,9 @@ var rankingSchema string
 //go:embed migrations/003_net_scores.sql
 var netSchema string
 
+//go:embed migrations/004_download_requests.sql
+var downloadSchema string
+
 func legacySchemaObjects() map[string]string {
 	names := []string{"media", "posts", "votes", "idx_posts_media_id", "author_votes", "score_positions", "user_scores", "rank_vote_insert", "rank_vote_update", "rank_post_insert", "legacy_vote_insert", "legacy_vote_update"}
 	definitions := append(strings.Split(strings.TrimSpace(initialSchema), ";")[:4], strings.Split(strings.TrimSpace(rankingSchema), "\n-- statement\n")...)
@@ -35,10 +38,18 @@ func legacySchemaObjects() map[string]string {
 	return objects
 }
 
-func schemaObjects() map[string]string {
+func netSchemaObjects() map[string]string {
 	objects := legacySchemaObjects()
 	for i, name := range []string{"score_positions", "user_scores", "deny_self_vote_insert", "deny_self_vote_update"} {
 		objects[name] = strings.Split(netSchema, "\n-- statement\n")[i]
+	}
+	return objects
+}
+
+func schemaObjects() map[string]string {
+	objects := netSchemaObjects()
+	for i, name := range []string{"download_requests", "download_attributions", "bot_senders"} {
+		objects[name] = strings.Split(downloadSchema, "\n-- statement\n")[i]
 	}
 	return objects
 }
@@ -66,11 +77,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	// Accept exactly the known previous schema; unrelated definitions stay rejected.
 	bootstrap := false
-	if err := s.checkSchema(ctx, legacySchemaObjects()); err != nil {
-		if !errors.Is(err, errMigrationRequired) {
-			return err
+	netCurrent := s.checkSchema(ctx, netSchemaObjects()) == nil
+	if !netCurrent {
+		if err := s.checkSchema(ctx, legacySchemaObjects()); err != nil {
+			if !errors.Is(err, errMigrationRequired) {
+				return err
+			}
+			bootstrap = true
 		}
-		bootstrap = true
 	}
 	if _, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
 		migrationFailure(ctx, "foreign_keys_enable", err)
@@ -105,23 +119,26 @@ func (s *Store) Migrate(ctx context.Context) error {
  ORDER BY s.chat_id,s.user_id ON CONFLICT(chat_id,user_id) DO NOTHING`)
 		statements = append(statements, ranking[3:]...)
 	}
-	// Rebuild only score metadata. Keep vote rows, publication IDs and the
-	// established tie order; changing formulas cannot reconstruct past net scores.
-	net := strings.Split(netSchema, "\n-- statement\n")
-	statements = append(statements,
-		"DROP TRIGGER rank_vote_insert", "DROP TRIGGER rank_vote_update", "DROP TRIGGER rank_post_insert",
-		"DROP VIEW user_scores",
-		"ALTER TABLE score_positions RENAME TO score_positions_before_balance",
-		net[0], net[1],
-		`INSERT INTO score_positions(id,chat_id,user_id,score)
+	if !netCurrent {
+		// Rebuild only score metadata. Keep vote rows, publication IDs and the
+		// established tie order; changing formulas cannot reconstruct past net scores.
+		net := strings.Split(netSchema, "\n-- statement\n")
+		statements = append(statements,
+			"DROP TRIGGER rank_vote_insert", "DROP TRIGGER rank_vote_update", "DROP TRIGGER rank_post_insert",
+			"DROP VIEW user_scores",
+			"ALTER TABLE score_positions RENAME TO score_positions_before_balance",
+			net[0], net[1],
+			`INSERT INTO score_positions(id,chat_id,user_id,score)
  SELECT p.id,s.chat_id,s.user_id,s.score FROM score_positions_before_balance p
  JOIN user_scores s ON s.chat_id=p.chat_id AND s.user_id=p.user_id ORDER BY p.id`,
-		`INSERT INTO score_positions(chat_id,user_id,score)
+			`INSERT INTO score_positions(chat_id,user_id,score)
  SELECT s.chat_id,s.user_id,s.score FROM user_scores s WHERE true
  ON CONFLICT(chat_id,user_id) DO NOTHING`,
-		"DROP TABLE score_positions_before_balance")
-	statements = append(statements, ranking[3:6]...)
-	statements = append(statements, net[2:]...)
+			"DROP TABLE score_positions_before_balance")
+		statements = append(statements, ranking[3:6]...)
+		statements = append(statements, net[2:]...)
+	}
+	statements = append(statements, strings.Split(downloadSchema, "\n-- statement\n")...)
 	statements = append(statements, "COMMIT")
 
 	for i, statement := range statements {
@@ -156,7 +173,7 @@ func (s *Store) Check(ctx context.Context) error { return s.checkSchema(ctx, sch
 
 func (s *Store) checkSchema(ctx context.Context, expected map[string]string) error {
 	// Turso forbids writing user_version: validate the actual objects.
-	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update')`)
+	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update','download_requests','download_attributions','bot_senders')`)
 	if err != nil {
 		return err
 	}
@@ -235,18 +252,6 @@ func scanPost(row scanner) (domain.Post, error) {
 	return p, err
 }
 
-func (s *Store) Register(ctx context.Context, in domain.Incoming) (domain.Post, error) {
-	if in.ChatID >= 0 || in.MessageID <= 0 || strings.TrimSpace(in.UniqueID) == "" || (in.MediaType != "video" && in.MediaType != "video_note") {
-		return domain.Post{}, domain.ErrInvalid
-	}
-	var mediaID int64
-	err := s.DB.QueryRowContext(ctx, `INSERT INTO media(file_unique_id) VALUES(?) ON CONFLICT(file_unique_id) DO UPDATE SET file_unique_id=excluded.file_unique_id RETURNING id`, in.UniqueID).Scan(&mediaID)
-	if err != nil {
-		return domain.Post{}, err
-	}
-	return scanPost(s.DB.QueryRowContext(ctx, `INSERT INTO posts(media_id,chat_id,source_message_id,uploader_user_id,media_type) VALUES(?,?,?,?,?) ON CONFLICT(chat_id,source_message_id) DO UPDATE SET source_message_id=excluded.source_message_id RETURNING `+postColumns, mediaID, in.ChatID, in.MessageID, in.UploaderID, in.MediaType))
-}
-
 func (s *Store) Claim(ctx context.Context, id, now, until int64) (bool, error) {
 	// An expired claim may have reached Telegram: never take it over for a second copy.
 	if _, err := s.DB.ExecContext(ctx, `UPDATE posts SET state='copy_unknown',claim_until=NULL WHERE id=? AND state='copying' AND claim_until<=?`, id, now); err != nil {
@@ -283,18 +288,21 @@ func (s *Store) CopyResult(ctx context.Context, id int64, messageID int, state s
 }
 
 func (s *Store) Deleted(ctx context.Context, id, now int64) error {
-	r, err := s.DB.ExecContext(ctx, `UPDATE posts SET state='done',source_deleted_at=? WHERE id=? AND state='copied' AND bot_message_id IS NOT NULL`, now, id)
-	if err != nil {
+	return s.immediate(ctx, func(conn *sql.Conn) error {
+		r, err := conn.ExecContext(ctx, `UPDATE posts SET state='done',source_deleted_at=? WHERE id=? AND state='copied' AND bot_message_id IS NOT NULL`, now, id)
+		if err != nil {
+			return err
+		}
+		n, err := r.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return domain.ErrConflict
+		}
+		_, err = conn.ExecContext(ctx, `DELETE FROM download_requests WHERE post_id=?`, id)
 		return err
-	}
-	n, err := r.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return domain.ErrConflict
-	}
-	return nil
+	})
 }
 
 func (s *Store) Vote(ctx context.Context, postID, chatID int64, messageID int, userID int64, vote int, now int64) (int64, error) {
@@ -350,7 +358,7 @@ func (s *Store) Copies(ctx context.Context, postID, afterID int64, limit int) ([
 func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT s.user_id,s.score FROM user_scores s
  JOIN score_positions r ON r.chat_id=s.chat_id AND r.user_id=s.user_id AND r.score=s.score
- WHERE s.chat_id=? AND s.score>0 ORDER BY s.score DESC,r.id ASC LIMIT 3`, chatID)
+ WHERE s.chat_id=? AND s.score>0 AND NOT EXISTS (SELECT 1 FROM bot_senders b WHERE b.user_id=s.user_id) ORDER BY s.score DESC,r.id ASC LIMIT 3`, chatID)
 	if err != nil {
 		return nil, err
 	}

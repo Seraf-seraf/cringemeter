@@ -18,6 +18,9 @@ func TestAdministrativeBoundary(t *testing.T) {
 		opens                bool
 	}{
 		{"GET", "s", `{"action":"probe"}`, 405, false},
+		{"POST", "", `{"action":"register_downloader"}`, 401, false},
+		{"POST", "s", `{"action":"register_downloader"}`, 400, false},
+		{"POST", "s", `{"action":"register_downloader","bot_id":99}`, 400, false},
 		{"POST", "", `{"action":"migrate"}`, 401, false},
 		{"POST", "wrong", `{"action":"migrate"}`, 401, false},
 		{"POST", "", `{"action":"remove_self_votes"}`, 401, false},
@@ -84,6 +87,36 @@ func TestUploadDiagnosticsReturnFixedReadOnlyChatReport(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"source_message_id":7`) || strings.Contains(w.Body.String(), `"source_message_id":8`) {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestRegisterDownloaderUsesConfiguredID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "downloader.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &turso.Store{DB: db}
+	if err = s.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Secret: "s", DownloaderBotID: 99, Open: func() (*turso.Store, error) { return s, nil }}
+	r := httptest.NewRequest("POST", "/api/operations", strings.NewReader(`{"action":"register_downloader"}`))
+	r.Header.Set("X-Cringemeter-Admin-Secret", "s")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	// Handler closes its DB; reopen the same file to verify the persisted ID.
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var id int64
+	if err = db.QueryRow(`SELECT user_id FROM bot_senders`).Scan(&id); err != nil || id != 99 {
+		t.Fatal(id, err)
 	}
 }
 

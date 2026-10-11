@@ -8,18 +8,26 @@ import (
 )
 
 type Config struct {
-	BotToken      string
-	BotID         int64
-	WebhookSecret string
-	ChatID        int64
-	DatabaseURL   string
-	AuthToken     string
-	DebugUploads  bool
+	BotToken        string
+	BotID           int64
+	WebhookSecret   string
+	ChatID          int64
+	DatabaseURL     string
+	AuthToken       string
+	DebugUploads    bool
+	DownloaderBotID int64
 }
 
 func Load(getenv func(string) string) (Config, error) {
 	c := Config{BotToken: getenv("TELEGRAM_BOT_TOKEN"), WebhookSecret: getenv("TELEGRAM_WEBHOOK_SECRET"), DatabaseURL: getenv("TURSO_DATABASE_URL"), AuthToken: getenv("TURSO_AUTH_TOKEN")}
 	c.DebugUploads = getenv("TELEGRAM_DEBUG_UPLOADS") == "1"
+	if value := getenv("TELEGRAM_DOWNLOADER_BOT_ID"); value != "" {
+		var err error
+		c.DownloaderBotID, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || c.DownloaderBotID <= 0 {
+			return Config{}, errors.New("invalid TELEGRAM_DOWNLOADER_BOT_ID")
+		}
+	}
 	parts := strings.Split(c.BotToken, ":")
 	if len(parts) != 2 || parts[1] == "" {
 		return Config{}, errors.New("invalid TELEGRAM_BOT_TOKEN")
