@@ -12,7 +12,7 @@ import (
 
 // Exercise the real HTTP driver: non-transactional requests close their stream.
 func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
-	for _, initialVersion := range []int{0, 2, 3, 4} {
+	for _, initialVersion := range []int{0, 2, 3, 4, 5} {
 		for _, fail := range []bool{false, true} {
 			t.Run(fmt.Sprint(initialVersion)+map[bool]string{false: "commit", true: "rollback"}[fail], func(t *testing.T) {
 				version := initialVersion
@@ -60,6 +60,8 @@ func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 									objects = netSchemaObjects()
 								} else if version == 4 {
 									objects = downloadSchemaObjects()
+								} else if version == 5 {
+									objects = authorSchemaObjects()
 								}
 								for name, definition := range objects {
 									rows = append(rows, []any{map[string]any{"type": "text", "value": name}, map[string]any{"type": "text", "value": definition}})
@@ -69,13 +71,13 @@ func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 							results = append(results, map[string]any{"type": "error", "error": map[string]any{"message": "writing user_version is not allowed"}})
 							continue
 						case sql == "COMMIT":
-							version = 5
+							version = 6
 							transaction = false
 							committed = true
 						case sql == "ROLLBACK":
 							transaction = false
 							rolledBack = true
-						case fail && (strings.HasPrefix(sql, "CREATE TRIGGER IF NOT EXISTS deny_self_vote_insert") || strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS download_attributions") || strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS participants")):
+						case fail && (strings.HasPrefix(sql, "CREATE TRIGGER IF NOT EXISTS deny_self_vote_insert") || strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS download_attributions") || strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS participants") || strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS source_attributions")):
 							results = append(results, map[string]any{"type": "error", "error": map[string]any{"code": "SQLITE_ERROR", "message": "injected schema failure"}})
 							continue
 						}
@@ -98,7 +100,7 @@ func TestRemoteMigrationKeepsTransactionAndRollsBackFailure(t *testing.T) {
 					if err == nil || committed || !rolledBack || version != initialVersion {
 						t.Fatal(err, committed, rolledBack, version)
 					}
-				} else if err != nil || !committed || rolledBack || version != 5 {
+				} else if err != nil || !committed || rolledBack || version != 6 {
 					t.Fatal(err, committed, rolledBack, version)
 				}
 			})

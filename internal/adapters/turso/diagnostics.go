@@ -20,6 +20,8 @@ type UploadDiagnostic struct {
 	RequestMessageID  int    `json:"request_message_id"`
 	YouTubeID         string `json:"youtube_video_id"`
 	ObservedYouTubeID string `json:"observed_youtube_video_id"`
+	SourceID          string `json:"source_video_id"`
+	ObservedSourceID  string `json:"observed_source_video_id"`
 	Evidence          string `json:"evidence"`
 	Verified          bool   `json:"verified"`
 }
@@ -33,8 +35,8 @@ func (s *Store) RecentUploads(ctx context.Context, chatID int64) ([]UploadDiagno
  (SELECT COUNT(*) FROM author_votes v WHERE v.media_id=p.media_id AND v.uploader_user_id=COALESCE(p.uploader_user_id,0) AND v.user_id!=v.uploader_user_id AND v.vote=1),
  (SELECT COUNT(*) FROM author_votes v WHERE v.media_id=p.media_id AND v.uploader_user_id=COALESCE(p.uploader_user_id,0) AND v.user_id!=v.uploader_user_id AND v.vote=0),
  EXISTS(SELECT 1 FROM bot_senders b WHERE b.user_id=p.uploader_user_id),
- COALESCE(a.source_message_id,0),COALESCE(a.youtube_video_id,''),COALESCE(a.observed_youtube_video_id,''),COALESCE(a.evidence,''),COALESCE(a.verified,0)
- FROM posts p LEFT JOIN download_attributions a ON a.post_id=p.id WHERE p.chat_id=? ORDER BY p.id DESC LIMIT 20`, chatID)
+ COALESCE(a.source_message_id,0),COALESCE(a.source_video_id,''),COALESCE(a.observed_source_video_id,''),COALESCE(a.evidence,''),COALESCE(a.verified,0)
+ FROM posts p LEFT JOIN source_attributions a ON a.post_id=p.id WHERE p.chat_id=? ORDER BY p.id DESC LIMIT 20`, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +44,14 @@ func (s *Store) RecentUploads(ctx context.Context, chatID int64) ([]UploadDiagno
 	report := make([]UploadDiagnostic, 0)
 	for rows.Next() {
 		var p UploadDiagnostic
-		if err := rows.Scan(&p.PostID, &p.MediaID, &p.SourceMessageID, &p.BotMessageID, &p.UploaderID, &p.MediaType, &p.State, &p.CreatedAt, &p.Cringe, &p.NonCringe, &p.BotUploader, &p.RequestMessageID, &p.YouTubeID, &p.ObservedYouTubeID, &p.Evidence, &p.Verified); err != nil {
+		if err := rows.Scan(&p.PostID, &p.MediaID, &p.SourceMessageID, &p.BotMessageID, &p.UploaderID, &p.MediaType, &p.State, &p.CreatedAt, &p.Cringe, &p.NonCringe, &p.BotUploader, &p.RequestMessageID, &p.SourceID, &p.ObservedSourceID, &p.Evidence, &p.Verified); err != nil {
 			return nil, err
+		}
+		if domain.ValidYouTubeID(p.SourceID) {
+			p.YouTubeID = p.SourceID
+		}
+		if domain.ValidYouTubeID(p.ObservedSourceID) {
+			p.ObservedYouTubeID = p.ObservedSourceID
 		}
 		report = append(report, p)
 	}
@@ -53,6 +61,7 @@ func (s *Store) RecentUploads(ctx context.Context, chatID int64) ([]UploadDiagno
 type RequestDiagnostic struct {
 	MessageID int    `json:"message_id"`
 	YouTubeID string `json:"youtube_video_id"`
+	SourceID  string `json:"source_video_id"`
 	UserID    int64  `json:"user_id"`
 	PostID    int64  `json:"reserved_post_id"`
 }
@@ -61,7 +70,7 @@ func (s *Store) PendingRequests(ctx context.Context, chatID int64) ([]RequestDia
 	if chatID >= 0 {
 		return nil, domain.ErrInvalid
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT source_message_id,youtube_video_id,user_id,COALESCE(post_id,0) FROM download_requests WHERE chat_id=? AND (post_id IS NOT NULL OR sent_at>?) ORDER BY source_message_id,youtube_video_id LIMIT 20`, chatID, s.queueNow()-domain.DownloadRequestTTLSeconds)
+	rows, err := s.DB.QueryContext(ctx, `SELECT source_message_id,source_video_id,user_id,COALESCE(post_id,0) FROM source_requests WHERE chat_id=? AND (post_id IS NOT NULL OR sent_at>?) ORDER BY source_message_id,source_video_id LIMIT 20`, chatID, s.queueNow()-domain.DownloadRequestTTLSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +78,11 @@ func (s *Store) PendingRequests(ctx context.Context, chatID int64) ([]RequestDia
 	result := make([]RequestDiagnostic, 0)
 	for rows.Next() {
 		var r RequestDiagnostic
-		if err = rows.Scan(&r.MessageID, &r.YouTubeID, &r.UserID, &r.PostID); err != nil {
+		if err = rows.Scan(&r.MessageID, &r.SourceID, &r.UserID, &r.PostID); err != nil {
 			return nil, err
+		}
+		if domain.ValidYouTubeID(r.SourceID) {
+			r.YouTubeID = r.SourceID
 		}
 		result = append(result, r)
 	}

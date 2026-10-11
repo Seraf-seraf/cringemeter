@@ -44,7 +44,7 @@ func validRequest(r domain.VideoRequest) bool {
 		return false
 	}
 	for _, id := range r.VideoIDs {
-		if !domain.ValidYouTubeID(id) {
+		if !domain.ValidSourceID(id) {
 			return false
 		}
 	}
@@ -61,7 +61,7 @@ func (s *Store) queueNow() int64 {
 // A reserved request belongs to a publication, including failed/retried copies.
 // Expire only unused requests while holding the same lock as reservation.
 func expireRequests(ctx context.Context, conn *sql.Conn, chatID, cutoff int64) error {
-	_, err := conn.ExecContext(ctx, `DELETE FROM download_requests WHERE chat_id=? AND post_id IS NULL AND sent_at<=?`, chatID, cutoff)
+	_, err := conn.ExecContext(ctx, `DELETE FROM source_requests WHERE chat_id=? AND post_id IS NULL AND sent_at<=?`, chatID, cutoff)
 	return err
 }
 
@@ -70,9 +70,9 @@ func remember(ctx context.Context, conn *sql.Conn, r domain.VideoRequest) error 
 		return domain.ErrInvalid
 	}
 	for _, id := range r.VideoIDs {
-		_, err := conn.ExecContext(ctx, `INSERT INTO download_requests(chat_id,source_message_id,youtube_video_id,user_id,sent_at)
- SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM download_attributions WHERE chat_id=? AND source_message_id=? AND youtube_video_id=?)
- ON CONFLICT(chat_id,source_message_id,youtube_video_id) DO NOTHING`, r.ChatID, r.MessageID, id, r.UserID, r.SentAt, r.ChatID, r.MessageID, id)
+		_, err := conn.ExecContext(ctx, `INSERT INTO source_requests(chat_id,source_message_id,source_video_id,user_id,sent_at)
+ SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM source_attributions WHERE chat_id=? AND source_message_id=? AND source_video_id=?)
+ ON CONFLICT(chat_id,source_message_id,source_video_id) DO NOTHING`, r.ChatID, r.MessageID, id, r.UserID, r.SentAt, r.ChatID, r.MessageID, id)
 		if err != nil {
 			return err
 		}
@@ -118,10 +118,10 @@ func resolve(ctx context.Context, conn *sql.Conn, in domain.Incoming) (*attribut
 	if !in.AllowFIFO || in.SenderBotID <= 0 || len(in.SourceVideoIDs) > 1 {
 		return nil, nil
 	}
-	if len(in.SourceVideoIDs) == 1 && (!domain.ValidYouTubeID(in.SourceVideoIDs[0]) || (in.SourceEvidence != "youtube_url" && in.SourceEvidence != "youtube_filename")) {
+	if len(in.SourceVideoIDs) == 1 && (!domain.ValidSourceID(in.SourceVideoIDs[0]) || (in.SourceEvidence != "youtube_url" && in.SourceEvidence != "youtube_filename" && in.SourceEvidence != "source_url" && in.SourceEvidence != "source_filename")) {
 		return nil, domain.ErrInvalid
 	}
-	query := `SELECT source_message_id,youtube_video_id,user_id FROM download_requests WHERE chat_id=? AND post_id IS NULL AND source_message_id<?`
+	query := `SELECT source_message_id,source_video_id,user_id FROM source_requests WHERE chat_id=? AND post_id IS NULL AND source_message_id<?`
 	args := []any{in.ChatID, in.MessageID}
 	evidence := "fifo"
 	if in.SourceRequest != nil {
@@ -138,13 +138,21 @@ func resolve(ctx context.Context, conn *sql.Conn, in domain.Incoming) (*attribut
 	observed := ""
 	if len(in.SourceVideoIDs) == 1 {
 		observed = in.SourceVideoIDs[0]
-		query += ` AND youtube_video_id=?`
-		args = append(args, observed)
+		if in.SourceEvidence == "youtube_filename" {
+			// A bare 11-character filename can be either a YouTube ID or an
+			// Instagram shortcode. Resolve it only against a unique queued source.
+			query += ` AND source_video_id IN (?,?)`
+			args = append(args, observed, "instagram:"+observed)
+		} else {
+			query += ` AND source_video_id=?`
+			args = append(args, observed)
+		}
 		if evidence != "reply" {
 			evidence = in.SourceEvidence
 		}
 	}
-	query += ` ORDER BY source_message_id,youtube_video_id LIMIT 2`
+	matches := query
+	query += ` ORDER BY source_message_id,source_video_id LIMIT 2`
 	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -155,6 +163,12 @@ func resolve(ctx context.Context, conn *sql.Conn, in domain.Incoming) (*attribut
 		if err = rows.Scan(&a.messageID, &a.videoID, &a.userID); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if in.SourceEvidence == "youtube_filename" && !domain.ValidYouTubeID(a.videoID) {
+			a.observed = a.videoID
+			if a.evidence != "reply" {
+				a.evidence = "source_filename"
+			}
 		}
 		candidates = append(candidates, a)
 	}
@@ -173,7 +187,7 @@ func resolve(ctx context.Context, conn *sql.Conn, in domain.Incoming) (*attribut
 	}
 	if evidence != "fifo" {
 		var ambiguous int
-		err = conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_requests WHERE chat_id=? AND post_id IS NULL AND source_message_id<? AND youtube_video_id=? AND user_id!=? AND (?=0 OR source_message_id=?)`, in.ChatID, in.MessageID, candidates[0].videoID, candidates[0].userID, replyID(in), replyID(in)).Scan(&ambiguous)
+		err = conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+matches+`) WHERE user_id!=? OR source_video_id!=?`, append(args, candidates[0].userID, candidates[0].videoID)...).Scan(&ambiguous)
 		if err != nil {
 			return nil, err
 		}
@@ -182,13 +196,6 @@ func resolve(ctx context.Context, conn *sql.Conn, in domain.Incoming) (*attribut
 		}
 	}
 	return &candidates[0], nil
-}
-
-func replyID(in domain.Incoming) int {
-	if in.SourceRequest != nil {
-		return in.SourceRequest.MessageID
-	}
-	return 0
 }
 
 func (s *Store) Register(ctx context.Context, in domain.Incoming) (p domain.Post, err error) {
@@ -230,11 +237,11 @@ func (s *Store) Register(ctx context.Context, in domain.Incoming) (p domain.Post
 		if err != nil || a == nil {
 			return err
 		}
-		_, err = conn.ExecContext(ctx, `UPDATE download_requests SET post_id=? WHERE chat_id=? AND source_message_id=? AND youtube_video_id=? AND post_id IS NULL`, p.ID, in.ChatID, a.messageID, a.videoID)
+		_, err = conn.ExecContext(ctx, `UPDATE source_requests SET post_id=? WHERE chat_id=? AND source_message_id=? AND source_video_id=? AND post_id IS NULL`, p.ID, in.ChatID, a.messageID, a.videoID)
 		if err != nil {
 			return err
 		}
-		_, err = conn.ExecContext(ctx, `INSERT INTO download_attributions(post_id,chat_id,source_message_id,youtube_video_id,user_id,observed_youtube_video_id,verified,evidence) VALUES(?,?,?,?,?,NULLIF(?,''),?,?)`, p.ID, in.ChatID, a.messageID, a.videoID, a.userID, a.observed, a.verified, a.evidence)
+		_, err = conn.ExecContext(ctx, `INSERT INTO source_attributions(post_id,chat_id,source_message_id,source_video_id,user_id,observed_source_video_id,verified,evidence) VALUES(?,?,?,?,?,NULLIF(?,''),?,?)`, p.ID, in.ChatID, a.messageID, a.videoID, a.userID, a.observed, a.verified, a.evidence)
 		return err
 	})
 	return p, err

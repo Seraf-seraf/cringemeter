@@ -244,7 +244,7 @@ func TestAuthorManagementUpgradePreservesExistingVotesAndQueue(t *testing.T) {
 	if err := s.DB.QueryRow(`SELECT id FROM score_positions WHERE chat_id=-100 AND user_id=42`).Scan(&position); err != nil || position != oldPosition {
 		t.Fatal(position, oldPosition, err)
 	}
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM download_requests`).Scan(&pending); err != nil || pending != 1 {
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM source_requests`).Scan(&pending); err != nil || pending != 1 {
 		t.Fatal(pending, err)
 	}
 	if _, err := s.ChangeAuthor(ctx, authorAction(p, 43), 20); err != nil {

@@ -16,7 +16,8 @@ var telegramUsername = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
 // Called after webhook authentication and target-chat/self-message filtering.
 func logUpload(ctx context.Context, updateID int, m *tg.Message, raw json.RawMessage) {
 	ids := youtubeIDs(m)
-	if m.Video == nil && m.VideoNote == nil && len(ids) == 0 && (m.From == nil || !m.From.IsBot) {
+	sources := telegram.SourceIDs(m)
+	if m.Video == nil && m.VideoNote == nil && len(sources) == 0 && (m.From == nil || !m.From.IsBot) {
 		return
 	}
 	var extra struct {
@@ -29,7 +30,7 @@ func logUpload(ctx context.Context, updateID int, m *tg.Message, raw json.RawMes
 	attrs := []any{"update_id", updateID, "chat_id", m.Chat.ID, "message_id", m.MessageID, "message_date", m.Date,
 		"has_video", m.Video != nil, "has_video_note", m.VideoNote != nil, "has_caption", m.Caption != "",
 		"has_document", m.Document != nil, "has_animation", m.Animation != nil, "media_group_id", m.MediaGroupID,
-		"youtube_video_ids", ids, "has_reply", m.ReplyToMessage != nil,
+		"youtube_video_ids", ids, "source_video_ids", sources, "has_reply", m.ReplyToMessage != nil,
 		"has_external_reply", present(extra.ExternalReply), "has_forward_origin", present(extra.ForwardOrigin)}
 	attrs = appendUser(attrs, "sender", m.From)
 	attrs = appendUser(attrs, "via_bot", m.ViaBot)
@@ -59,7 +60,7 @@ func logUpload(ctx context.Context, updateID int, m *tg.Message, raw json.RawMes
 		attrs = append(attrs, "sender_chat_id", m.SenderChat.ID)
 	}
 	if reply := m.ReplyToMessage; reply != nil {
-		attrs = append(attrs, "reply_message_id", reply.MessageID, "reply_youtube_video_ids", youtubeIDs(reply))
+		attrs = append(attrs, "reply_message_id", reply.MessageID, "reply_youtube_video_ids", youtubeIDs(reply), "reply_source_video_ids", telegram.SourceIDs(reply))
 		attrs = appendUser(attrs, "reply_sender", reply.From)
 		if reply.SenderChat != nil {
 			attrs = append(attrs, "reply_sender_chat_id", reply.SenderChat.ID)

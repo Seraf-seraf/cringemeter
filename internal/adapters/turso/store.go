@@ -31,6 +31,9 @@ var downloadSchema string
 //go:embed migrations/005_author_management.sql
 var authorSchema string
 
+//go:embed migrations/006_source_links.sql
+var sourceSchema string
+
 func legacySchemaObjects() map[string]string {
 	names := []string{"media", "posts", "votes", "idx_posts_media_id", "author_votes", "score_positions", "user_scores", "rank_vote_insert", "rank_vote_update", "rank_post_insert", "legacy_vote_insert", "legacy_vote_update"}
 	definitions := append(strings.Split(strings.TrimSpace(initialSchema), ";")[:4], strings.Split(strings.TrimSpace(rankingSchema), "\n-- statement\n")...)
@@ -57,10 +60,18 @@ func downloadSchemaObjects() map[string]string {
 	return objects
 }
 
-func schemaObjects() map[string]string {
+func authorSchemaObjects() map[string]string {
 	objects := downloadSchemaObjects()
 	for i, name := range []string{"participants", "author_changes"} {
 		objects[name] = strings.Split(authorSchema, "\n-- statement\n")[i]
+	}
+	return objects
+}
+
+func schemaObjects() map[string]string {
+	objects := authorSchemaObjects()
+	for i, name := range []string{"source_requests", "source_attributions"} {
+		objects[name] = strings.Split(sourceSchema, "\n-- statement\n")[i]
 	}
 	return objects
 }
@@ -154,6 +165,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	statements = append(statements, strings.Split(downloadSchema, "\n-- statement\n")...)
 	statements = append(statements, strings.Split(authorSchema, "\n-- statement\n")...)
+	statements = append(statements, strings.Split(sourceSchema, "\n-- statement\n")...)
 	statements = append(statements, "COMMIT")
 
 	for i, statement := range statements {
@@ -188,7 +200,7 @@ func (s *Store) Check(ctx context.Context) error { return s.checkSchema(ctx, sch
 
 func (s *Store) checkSchema(ctx context.Context, expected map[string]string) error {
 	// Turso forbids writing user_version: validate the actual objects.
-	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update','download_requests','download_attributions','bot_senders','participants','author_changes')`)
+	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update','download_requests','download_attributions','bot_senders','participants','author_changes','source_requests','source_attributions')`)
 	if err != nil {
 		return err
 	}
@@ -315,7 +327,7 @@ func (s *Store) Deleted(ctx context.Context, id, now int64) error {
 		if n != 1 {
 			return domain.ErrConflict
 		}
-		_, err = conn.ExecContext(ctx, `DELETE FROM download_requests WHERE post_id=?`, id)
+		_, err = conn.ExecContext(ctx, `DELETE FROM source_requests WHERE post_id=?`, id)
 		return err
 	})
 }

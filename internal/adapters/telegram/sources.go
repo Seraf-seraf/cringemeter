@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -10,11 +9,21 @@ import (
 	"handler/internal/domain"
 )
 
-var sourceURL = regexp.MustCompile(`https?://[^\s<>()]+`)
+var sourceURL = regexp.MustCompile(`(?i)https?://[^\s<>()]+`)
 
 // YouTubeIDs extracts canonical IDs, never titles, arbitrary callback data or
 // opaque Telegram file identifiers. The result is bounded by message size.
 func YouTubeIDs(m *tg.Message) []string {
+	ids := make([]string, 0)
+	for _, id := range SourceIDs(m) {
+		if domain.ValidYouTubeID(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func SourceIDs(m *tg.Message) []string {
 	ids := make([]string, 0)
 	if m == nil {
 		return ids
@@ -37,23 +46,7 @@ func YouTubeIDs(m *tg.Message) []string {
 		}
 	}
 	for _, value := range urls {
-		u, err := url.Parse(value)
-		if err != nil {
-			continue
-		}
-		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-		id := ""
-		switch strings.ToLower(u.Hostname()) {
-		case "youtu.be", "www.youtu.be":
-			id = parts[0]
-		case "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com":
-			if parts[0] == "watch" {
-				id = u.Query().Get("v")
-			} else if len(parts) > 1 && (parts[0] == "shorts" || parts[0] == "embed" || parts[0] == "live") {
-				id = parts[1]
-			}
-		}
-		if domain.ValidYouTubeID(id) {
+		if id := domain.SourceVideoID(strings.TrimRight(value, ".,;!?")); id != "" {
 			ids = appendUniqueID(ids, id)
 		}
 	}
@@ -94,7 +87,7 @@ func LinkRequest(m *tg.Message) (domain.VideoRequest, bool) {
 	if m == nil || m.Chat == nil || m.MessageID <= 0 || m.From == nil || m.From.ID <= 0 || m.From.IsBot || m.SenderChat != nil || m.Text == "" {
 		return domain.VideoRequest{}, false
 	}
-	ids := YouTubeIDs(m)
+	ids := SourceIDs(m)
 	if len(ids) == 0 {
 		return domain.VideoRequest{}, false
 	}
@@ -118,11 +111,20 @@ func DownloadedIncoming(m *tg.Message, loaderID int64) (domain.Incoming, bool) {
 	if r, valid := LinkRequest(m.ReplyToMessage); valid && r.ChatID == in.ChatID {
 		in.SourceRequest = &r
 	}
-	in.SourceVideoIDs = YouTubeIDs(m)
+	in.SourceVideoIDs = SourceIDs(m)
 	if len(in.SourceVideoIDs) > 0 {
-		in.SourceEvidence = "youtube_url"
+		in.SourceEvidence = "source_url"
+		if len(in.SourceVideoIDs) == 1 && domain.ValidYouTubeID(in.SourceVideoIDs[0]) {
+			in.SourceEvidence = "youtube_url"
+		}
 	}
-	if id := FilenameYouTubeID(m); id != "" {
+	filenameAllowed := true
+	for _, id := range in.SourceVideoIDs {
+		if !domain.ValidYouTubeID(id) {
+			filenameAllowed = false
+		}
+	}
+	if id := FilenameYouTubeID(m); id != "" && filenameAllowed {
 		in.SourceVideoIDs = appendUniqueID(in.SourceVideoIDs, id)
 		if in.SourceEvidence == "" {
 			in.SourceEvidence = "youtube_filename"

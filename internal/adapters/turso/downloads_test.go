@@ -21,6 +21,133 @@ func downloaded(msg int, file string) domain.Incoming {
 	return domain.Incoming{ChatID: -100, MessageID: msg, MediaType: "video", UniqueID: file, SenderBotID: 99, AllowFIFO: true}
 }
 
+func TestSupportedSourcesPreserveAuthorAttributionAndReplay(t *testing.T) {
+	for _, id := range []string{"instagram:Da7A8MPMm0n", "tiktok:7412345678901234567", "tiktok-share:ZMabcdef"} {
+		for _, evidence := range []string{"fifo", "reply", "source_url"} {
+			t.Run(id+"/"+evidence, func(t *testing.T) {
+				s := testStore(t)
+				ctx := context.Background()
+				r := enqueue(t, s, 1, 42, id)
+				in := downloaded(2, "file")
+				if evidence == "reply" {
+					in.SourceRequest = &r
+				} else if evidence == "source_url" {
+					in.SourceVideoIDs, in.SourceEvidence = []string{id}, evidence
+				}
+				p, err := s.Register(ctx, in)
+				if err != nil || p.UploaderID != 42 {
+					t.Fatal("new source did not assign its sender", p, err)
+				}
+				rows, err := s.RecentUploads(ctx, -100)
+				if err != nil || len(rows) != 1 || rows[0].SourceID != id || rows[0].YouTubeID != "" || rows[0].Evidence != evidence || rows[0].Verified != (evidence != "fifo") {
+					t.Fatal("source attribution diagnostics", rows, err)
+				}
+				publish(t, s, p, 101)
+				if _, err = s.Vote(ctx, p.ID, -100, 101, 42, 1, 11); !errors.Is(err, domain.ErrSelfVote) {
+					t.Fatal("source author can self-vote", err)
+				}
+				if err = s.Deleted(ctx, p.ID, 12); err != nil {
+					t.Fatal(err)
+				}
+				if err = s.RememberRequest(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+				pending, err := s.PendingRequests(ctx, -100)
+				if err != nil || len(pending) != 0 {
+					t.Fatal("processed source resurrected", pending, err)
+				}
+				again, err := s.Register(ctx, in)
+				if err != nil || again.ID != p.ID || again.UploaderID != 42 {
+					t.Fatal("source replay changed the author", again, err)
+				}
+			})
+		}
+	}
+}
+
+func TestDifferentSourceProvidersCannotMatchEqualIDs(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	enqueue(t, s, 1, 42, "Da7A8MPMm0n")
+	enqueue(t, s, 2, 43, "instagram:Da7A8MPMm0n")
+	in := downloaded(3, "file")
+	in.SourceVideoIDs, in.SourceEvidence = []string{"instagram:Da7A8MPMm0n"}, "source_url"
+	p, err := s.Register(ctx, in)
+	if err != nil || p.UploaderID != 43 {
+		t.Fatal("YouTube ID was confused with an Instagram shortcode", p, err)
+	}
+}
+
+func TestBareFilenameRequiresOneQueuedProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		queue []string
+		owner int64
+	}{
+		{"Instagram", []string{"instagram:Da7A8MPMm0n"}, 42},
+		{"ambiguous providers", []string{"instagram:Da7A8MPMm0n", "Da7A8MPMm0n"}, 0},
+		{"Instagram replays before YouTube", []string{"instagram:Da7A8MPMm0n", "instagram:Da7A8MPMm0n", "Da7A8MPMm0n"}, 0},
+		{"YouTube replays before Instagram", []string{"Da7A8MPMm0n", "Da7A8MPMm0n", "instagram:Da7A8MPMm0n"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			for i, id := range tc.queue {
+				owner := int64(42)
+				if domain.ValidYouTubeID(id) {
+					owner = 43
+				}
+				enqueue(t, s, i+1, owner, id)
+			}
+			in := downloaded(len(tc.queue)+1, "file")
+			in.SourceVideoIDs, in.SourceEvidence = []string{"Da7A8MPMm0n"}, "youtube_filename"
+			p, err := s.Register(ctx, in)
+			if err != nil || p.UploaderID != tc.owner {
+				t.Fatal("filename picked a wrong provider", p, err)
+			}
+			if tc.owner != 0 {
+				rows, err := s.RecentUploads(ctx, -100)
+				if err != nil || len(rows) != 1 || rows[0].SourceID != "instagram:Da7A8MPMm0n" || rows[0].ObservedSourceID != rows[0].SourceID || rows[0].Evidence != "source_filename" || !rows[0].Verified {
+					t.Fatal("filename source is incorrectly labeled as YouTube", rows, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSourceMigrationPreservesYouTubeQueueHistoryAndVotes(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	p := ownedPost(t, s, 3, "file", 42)
+	voteFor(t, s, p, 50, 1)
+	var position int64
+	if err := s.DB.QueryRow(`SELECT id FROM score_positions WHERE user_id=42`).Scan(&position); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`DROP TABLE source_requests; DROP TABLE source_attributions;
+ INSERT INTO download_requests(chat_id,source_message_id,youtube_video_id,user_id,sent_at,post_id) VALUES(-100,1,'abcdefghijk',42,10,?),(-100,2,'ZYXWVUTSRQP',43,10,NULL);
+ INSERT INTO download_attributions(post_id,chat_id,source_message_id,youtube_video_id,user_id,observed_youtube_video_id,verified,evidence) VALUES(?,-100,1,'abcdefghijk',42,'abcdefghijk',1,'reply')`, p.ID, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q, err := s.PendingRequests(ctx, -100)
+	if err != nil || len(q) != 2 || q[0].SourceID != "abcdefghijk" || q[0].PostID != p.ID || q[1].SourceID != "ZYXWVUTSRQP" {
+		t.Fatal("YouTube queue/reservation changed during migration", q, err)
+	}
+	rows, err := s.RecentUploads(ctx, -100)
+	if err != nil || len(rows) != 1 || rows[0].YouTubeID != "abcdefghijk" || rows[0].SourceID != "abcdefghijk" || rows[0].Evidence != "reply" || !rows[0].Verified || rows[0].Cringe != 1 {
+		t.Fatal("migration changed source history or votes", rows, err)
+	}
+	var current int64
+	if err = s.DB.QueryRow(`SELECT id FROM score_positions WHERE user_id=42`).Scan(&current); err != nil || current != position {
+		t.Fatal("migration changed ranking tie order", current, position, err)
+	}
+}
+
 func TestDownloadFIFOExpiresAtFiveMinutes(t *testing.T) {
 	for _, age := range []int64{299, 300, 301} {
 		t.Run((time.Duration(age) * time.Second).String(), func(t *testing.T) {
@@ -41,7 +168,7 @@ func TestDownloadFIFOExpiresAtFiveMinutes(t *testing.T) {
 				t.Fatal(err)
 			}
 			var remaining int
-			if err = s.DB.QueryRow(`SELECT COUNT(*) FROM download_requests`).Scan(&remaining); err != nil || (remaining == 1) != (age < 300) {
+			if err = s.DB.QueryRow(`SELECT COUNT(*) FROM source_requests`).Scan(&remaining); err != nil || (remaining == 1) != (age < 300) {
 				t.Fatal("expired request resurrected", remaining, err)
 			}
 		})
@@ -124,7 +251,7 @@ func TestConcurrentDownloadExpiryAndReplayDoNotStealAuthor(t *testing.T) {
 	}
 	wg.Wait()
 	var requests, posts, attrs int
-	if err := s.DB.QueryRow(`SELECT (SELECT COUNT(*) FROM download_requests),(SELECT COUNT(*) FROM posts),(SELECT COUNT(*) FROM download_attributions)`).Scan(&requests, &posts, &attrs); err != nil || requests != 1 || posts != 1 || attrs != 1 {
+	if err := s.DB.QueryRow(`SELECT (SELECT COUNT(*) FROM source_requests),(SELECT COUNT(*) FROM posts),(SELECT COUNT(*) FROM source_attributions)`).Scan(&requests, &posts, &attrs); err != nil || requests != 1 || posts != 1 || attrs != 1 {
 		t.Fatal("cleanup/replay duplicated or resurrected request", requests, posts, attrs, err)
 	}
 }
@@ -185,7 +312,7 @@ func TestFailedAttributionRollsBackPublicationAndQueueReservation(t *testing.T) 
 	s := testStore(t)
 	ctx := context.Background()
 	enqueue(t, s, 1, 42, "abcdefghijk")
-	if _, err := s.DB.Exec(`CREATE TRIGGER fail_attribution BEFORE INSERT ON download_attributions BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
+	if _, err := s.DB.Exec(`CREATE TRIGGER fail_attribution BEFORE INSERT ON source_attributions BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Register(ctx, downloaded(2, "f")); err == nil {
@@ -305,7 +432,7 @@ func TestConcurrentDownloadReservationsDoNotReuseRequests(t *testing.T) {
 	}
 	wg.Wait()
 	var posts, attrs, owners int
-	s.DB.QueryRow(`SELECT COUNT(*),COUNT(DISTINCT user_id) FROM download_attributions`).Scan(&attrs, &owners)
+	s.DB.QueryRow(`SELECT COUNT(*),COUNT(DISTINCT user_id) FROM source_attributions`).Scan(&attrs, &owners)
 	s.DB.QueryRow(`SELECT COUNT(*) FROM posts`).Scan(&posts)
 	if posts != 2 || attrs != 2 || owners != 2 {
 		t.Fatal(posts, attrs, owners)
@@ -326,7 +453,7 @@ func TestDownloadMigrationPreservesNetVotesAndTieOrderAndExcludesBots(t *testing
 	before, _ := s.Top(ctx, -100)
 	var position int64
 	s.DB.QueryRow(`SELECT id FROM score_positions WHERE user_id=42`).Scan(&position)
-	for _, name := range []string{"download_attributions", "download_requests", "bot_senders"} {
+	for _, name := range []string{"source_attributions", "source_requests", "download_attributions", "download_requests", "bot_senders"} {
 		if _, err := s.DB.Exec("DROP TABLE " + name); err != nil {
 			t.Fatal(err)
 		}

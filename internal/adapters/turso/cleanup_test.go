@@ -41,7 +41,7 @@ func TestBotOwnedVotesCleanupPreservesHumanPoolsAndPosts(t *testing.T) {
 	}
 	var posts, queue int
 	s.DB.QueryRow(`SELECT COUNT(*) FROM posts`).Scan(&posts)
-	s.DB.QueryRow(`SELECT COUNT(*) FROM download_requests`).Scan(&queue)
+	s.DB.QueryRow(`SELECT COUNT(*) FROM source_requests`).Scan(&queue)
 	if posts != 3 || queue != 1 {
 		t.Fatal(posts, queue)
 	}
