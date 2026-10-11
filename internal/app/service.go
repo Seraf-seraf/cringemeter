@@ -96,6 +96,10 @@ func (s *Service) Publish(ctx context.Context, in domain.Incoming) error {
 		}
 	}
 	if p.State == domain.Copied {
+		if in.SenderBotID > 0 && p.UploaderID == 0 {
+			s.sync(ctx, p)
+			return nil
+		}
 		if err := s.Telegram.Delete(ctx, p.ChatID, p.SourceMessageID); err != nil {
 			var apiErr *domain.APIError
 			if !errors.As(err, &apiErr) || !apiErr.MessageGone {

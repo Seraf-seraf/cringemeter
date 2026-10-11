@@ -93,6 +93,48 @@ func TestPublishPersistsBeforeDeleteAndReplays(t *testing.T) {
 	}
 }
 
+func TestUnknownBotAuthorKeepsOriginalOnWebhookReplay(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	in := input(1)
+	in.SenderBotID = 99
+	for i := 0; i < 3; i++ {
+		if err := s.Publish(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := store.Post(ctx, 1)
+	if err != nil || p.State != domain.Copied || p.UploaderID != 0 || tg.copies != 1 || tg.deletes != 0 {
+		t.Fatalf("unknown-author bot original was removed or copied again: post=%+v, copies=%d, deletes=%d, err=%v", p, tg.copies, tg.deletes, err)
+	}
+	var deleted sql.NullInt64
+	if err = store.DB.QueryRow(`SELECT source_deleted_at FROM posts WHERE id=?`, p.ID).Scan(&deleted); err != nil || deleted.Valid {
+		t.Fatal("original is marked deleted", deleted, err)
+	}
+}
+
+func TestBotOriginalIsDeletedAfterAuthorIsAssigned(t *testing.T) {
+	s, store, tg := setup(t)
+	ctx := context.Background()
+	in := input(1)
+	in.SenderBotID = 99
+	if err := s.Publish(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ChangeAuthor(ctx, domain.AuthorAction{AuthorClick: domain.AuthorClick{PostID: 1, ChatID: -100, MessageID: 101, UserID: 7}, TargetID: 42}, 11); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.Publish(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := store.Post(ctx, 1)
+	if err != nil || p.State != domain.Done || p.UploaderID != 42 || tg.copies != 1 || tg.deletes != 1 {
+		t.Fatal("assigned bot original is not handled idempotently", p, tg.copies, tg.deletes, err)
+	}
+}
+
 func TestCopyFailurePreservesOriginalAndNeverRetries(t *testing.T) {
 	for _, tc := range []struct {
 		name, state string
