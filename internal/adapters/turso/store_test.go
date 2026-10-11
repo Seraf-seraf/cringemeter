@@ -316,6 +316,23 @@ func TestSchemaCheckRejectsIncompatibleExistingTable(t *testing.T) {
 	}
 }
 
+// Seed the historical schema using its original seven-column post contract.
+func legacyPost(t *testing.T, s *Store, source int, file string, owner int64) domain.Post {
+	t.Helper()
+	var p domain.Post
+	if err := s.DB.QueryRow(`INSERT INTO media(file_unique_id) VALUES(?) ON CONFLICT(file_unique_id) DO UPDATE SET file_unique_id=excluded.file_unique_id RETURNING id`, file).Scan(&p.MediaID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`INSERT INTO posts(media_id,chat_id,source_message_id,uploader_user_id,media_type) VALUES(?,-100,?,?,'video') RETURNING id`, p.MediaID, source, owner).Scan(&p.ID); err != nil {
+		t.Fatal(err)
+	}
+	p.ChatID = -100
+	p.SourceMessageID = source
+	p.UploaderID = owner
+	p.State = domain.Pending
+	return p
+}
+
 func TestMigrationResetsLegacyVotesOnceAndRejectsLateLegacyWrites(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "old.db")+"?_pragma=foreign_keys(1)")
 	if err != nil {
@@ -328,14 +345,8 @@ func TestMigrationResetsLegacyVotesOnceAndRejectsLateLegacyWrites(t *testing.T) 
 	}
 	s := &Store{DB: db}
 	ctx := context.Background()
-	a, err := s.Register(ctx, domain.Incoming{ChatID: -100, MessageID: 1, MediaType: "video", UniqueID: "shared", UploaderID: ptr(50)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := s.Register(ctx, domain.Incoming{ChatID: -100, MessageID: 2, MediaType: "video", UniqueID: "shared", UploaderID: ptr(10)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := legacyPost(t, s, 1, "shared", 50)
+	b := legacyPost(t, s, 2, "shared", 10)
 	if _, err = db.Exec(`INSERT INTO votes(media_id,user_id,vote,updated_at) VALUES(?,7,1,10),(?,8,0,11)`, a.MediaID, a.MediaID); err != nil {
 		t.Fatal(err)
 	}
@@ -459,8 +470,10 @@ func TestNetMigrationPreservesVotesTieOrderAndManualCleanupRemovesOnlySelfVotes(
 			t.Fatal(err)
 		}
 	}
-	a := ownedPost(t, s, 1, "shared", 50)
-	b := ownedPost(t, s, 2, "shared", 10)
+	a := legacyPost(t, s, 1, "shared", 50)
+	b := legacyPost(t, s, 2, "shared", 10)
+	publish(t, s, a, 101)
+	publish(t, s, b, 102)
 	for _, v := range []struct {
 		owner, voter int64
 		vote         int

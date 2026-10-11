@@ -78,11 +78,16 @@ func (c *Client) Call(ctx context.Context, method string, payload any, result an
 	return nil
 }
 
-func Keyboard(postID int64, counts domain.Counts) tg.InlineKeyboardMarkup {
+func Keyboard(postID int64, counts domain.Counts, author ...string) tg.InlineKeyboardMarkup {
 	id := strconv.FormatInt(postID, 10)
+	label := "👤 Автор: не определён"
+	if len(author) > 0 {
+		label = author[0]
+	}
 	return tg.NewInlineKeyboardMarkup(
 		tg.NewInlineKeyboardRow(tg.NewInlineKeyboardButtonData("🤡Кринж · "+strconv.FormatInt(counts.Cringe, 10), "v:"+id+":1")),
 		tg.NewInlineKeyboardRow(tg.NewInlineKeyboardButtonData("🙂‍↕️Некринж · "+strconv.FormatInt(counts.NonCringe, 10), "v:"+id+":0")),
+		tg.NewInlineKeyboardRow(tg.NewInlineKeyboardButtonData(label, "a:"+id)),
 	)
 }
 
@@ -90,7 +95,7 @@ func (c *Client) Copy(ctx context.Context, p domain.Post, counts domain.Counts) 
 	var result struct {
 		MessageID int `json:"message_id"`
 	}
-	err := c.Call(ctx, "copyMessage", map[string]any{"chat_id": p.ChatID, "from_chat_id": p.ChatID, "message_id": p.SourceMessageID, "reply_markup": Keyboard(p.ID, counts)}, &result)
+	err := c.Call(ctx, "copyMessage", map[string]any{"chat_id": p.ChatID, "from_chat_id": p.ChatID, "message_id": p.SourceMessageID, "reply_markup": c.keyboard(ctx, p, counts)}, &result)
 	if err == nil && result.MessageID <= 0 {
 		return 0, &domain.APIError{}
 	}
@@ -131,7 +136,7 @@ func (c *Client) Answer(ctx context.Context, id, text string, showAlert bool) er
 }
 
 func (c *Client) Edit(ctx context.Context, p domain.Post, counts domain.Counts) error {
-	return c.Call(ctx, "editMessageReplyMarkup", map[string]any{"chat_id": p.ChatID, "message_id": p.BotMessageID, "reply_markup": Keyboard(p.ID, counts)}, nil)
+	return c.Call(ctx, "editMessageReplyMarkup", map[string]any{"chat_id": p.ChatID, "message_id": p.BotMessageID, "reply_markup": c.keyboard(ctx, p, counts)}, nil)
 }
 
 func Ballot(q *tg.CallbackQuery) (domain.Ballot, bool) {

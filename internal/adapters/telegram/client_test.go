@@ -30,9 +30,12 @@ func TestCopySendsMessageReferenceAndKeyboard(t *testing.T) {
 			t.Error(payload)
 		}
 		rows := payload.Markup.InlineKeyboard
-		if len(rows) != 2 || len(rows[0]) != 1 || len(rows[1]) != 1 {
+		if len(rows) != 3 || len(rows[0]) != 1 || len(rows[1]) != 1 || len(rows[2]) != 1 {
 			t.Error(rows)
 			return
+		}
+		if rows[2][0].Text != "👤 Автор: не определён" || rows[2][0].CallbackData == nil || *rows[2][0].CallbackData != "a:9" {
+			t.Error(rows)
 		}
 		cringe, nonCringe := rows[0][0], rows[1][0]
 		if cringe.Text != "🤡Кринж · 2" || nonCringe.Text != "🙂‍↕️Некринж · 3" || cringe.CallbackData == nil || nonCringe.CallbackData == nil || *cringe.CallbackData != "v:9:1" || *nonCringe.CallbackData != "v:9:0" {

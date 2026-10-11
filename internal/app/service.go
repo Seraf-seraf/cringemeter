@@ -24,6 +24,10 @@ type Repository interface {
 	Copies(context.Context, int64, int64, int) ([]domain.Post, error)
 	Unavailable(context.Context, int64) error
 	Top(context.Context, int64) ([]domain.Rank, error)
+	Participants(context.Context, int64, int) (domain.ParticipantPage, error)
+	KnownParticipant(context.Context, int64, int64) (bool, error)
+	RememberParticipant(context.Context, int64, domain.Participant) error
+	ChangeAuthor(context.Context, domain.AuthorAction, int64) (domain.Post, error)
 }
 
 type Messenger interface {
@@ -32,6 +36,9 @@ type Messenger interface {
 	Answer(context.Context, string, string, bool) error
 	Edit(context.Context, domain.Post, domain.Counts) error
 	SendTop(context.Context, domain.Group, []domain.Rank) error
+	IsAdmin(context.Context, int64, int64) (bool, error)
+	LookupParticipant(context.Context, int64, int64) (domain.Participant, error)
+	ChooseAuthor(context.Context, domain.Post, domain.Counts, domain.ParticipantPage) error
 }
 
 type Service struct {
@@ -120,7 +127,12 @@ func (s *Service) RecordVote(ctx context.Context, b domain.Ballot) error {
 		return err
 	}
 	s.answer(ctx, b.CallbackID, "Голос учтён", false)
-	p := domain.Post{ID: b.PostID, MediaID: mediaID, ChatID: b.ChatID, BotMessageID: b.MessageID}
+	p, lookupErr := s.Store.Post(ctx, b.PostID)
+	if lookupErr != nil {
+		slog.WarnContext(ctx, "keyboard update deferred", "post_id", b.PostID, "phase", "post", "code", "store_failed")
+		return nil
+	}
+	p.MediaID = mediaID
 	s.sync(ctx, p)
 	return nil
 }

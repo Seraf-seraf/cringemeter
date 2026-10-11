@@ -51,6 +51,9 @@ func ValidYouTubeID(id string) bool {
 }
 
 type Post struct {
+	AuthorUsername  string
+	AuthorName      string
+	AuthorRevision  int64
 	UploaderID      int64
 	ID              int64
 	MediaID         int64
@@ -58,6 +61,29 @@ type Post struct {
 	SourceMessageID int
 	BotMessageID    int
 	State           string
+}
+
+type Participant struct {
+	ID       int64
+	Username string
+	Name     string
+}
+
+const AuthorPageSize = 10
+
+// Index is zero-based; Pages is at least one, including an empty list.
+type ParticipantPage struct {
+	Users []Participant
+	Index int
+	Pages int
+}
+
+type AuthorAction struct {
+	AuthorClick
+	TargetID         int64
+	Page             int
+	Cancel           bool
+	ExpectedRevision int64
 }
 
 type Counts struct{ Cringe, NonCringe int64 }
@@ -87,6 +113,14 @@ type Ballot struct {
 	MessageID  int
 	UserID     int64
 	Vote       int
+}
+
+type AuthorClick struct {
+	CallbackID string
+	PostID     int64
+	ChatID     int64
+	MessageID  int
+	UserID     int64
 }
 
 type Group struct {

@@ -28,6 +28,9 @@ var netSchema string
 //go:embed migrations/004_download_requests.sql
 var downloadSchema string
 
+//go:embed migrations/005_author_management.sql
+var authorSchema string
+
 func legacySchemaObjects() map[string]string {
 	names := []string{"media", "posts", "votes", "idx_posts_media_id", "author_votes", "score_positions", "user_scores", "rank_vote_insert", "rank_vote_update", "rank_post_insert", "legacy_vote_insert", "legacy_vote_update"}
 	definitions := append(strings.Split(strings.TrimSpace(initialSchema), ";")[:4], strings.Split(strings.TrimSpace(rankingSchema), "\n-- statement\n")...)
@@ -46,10 +49,18 @@ func netSchemaObjects() map[string]string {
 	return objects
 }
 
-func schemaObjects() map[string]string {
+func downloadSchemaObjects() map[string]string {
 	objects := netSchemaObjects()
 	for i, name := range []string{"download_requests", "download_attributions", "bot_senders"} {
 		objects[name] = strings.Split(downloadSchema, "\n-- statement\n")[i]
+	}
+	return objects
+}
+
+func schemaObjects() map[string]string {
+	objects := downloadSchemaObjects()
+	for i, name := range []string{"participants", "author_changes"} {
+		objects[name] = strings.Split(authorSchema, "\n-- statement\n")[i]
 	}
 	return objects
 }
@@ -139,6 +150,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		statements = append(statements, net[2:]...)
 	}
 	statements = append(statements, strings.Split(downloadSchema, "\n-- statement\n")...)
+	statements = append(statements, strings.Split(authorSchema, "\n-- statement\n")...)
 	statements = append(statements, "COMMIT")
 
 	for i, statement := range statements {
@@ -173,7 +185,7 @@ func (s *Store) Check(ctx context.Context) error { return s.checkSchema(ctx, sch
 
 func (s *Store) checkSchema(ctx context.Context, expected map[string]string) error {
 	// Turso forbids writing user_version: validate the actual objects.
-	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update','download_requests','download_attributions','bot_senders')`)
+	objects, err := s.DB.QueryContext(ctx, `SELECT name,sql FROM sqlite_master WHERE name IN ('media','posts','votes','idx_posts_media_id','author_votes','score_positions','user_scores','rank_vote_insert','rank_vote_update','rank_post_insert','legacy_vote_insert','legacy_vote_update','deny_self_vote_insert','deny_self_vote_update','download_requests','download_attributions','bot_senders','participants','author_changes')`)
 	if err != nil {
 		return err
 	}
@@ -239,13 +251,13 @@ func normalizeSchema(sql string) string {
 	return strings.TrimSuffix(sql, ";")
 }
 
-const postColumns = "id,media_id,chat_id,source_message_id,COALESCE(bot_message_id,0),state,COALESCE(uploader_user_id,0)"
+const postColumns = "id,media_id,chat_id,source_message_id,COALESCE(bot_message_id,0),state,COALESCE(uploader_user_id,0),COALESCE((SELECT username FROM participants WHERE participants.chat_id=posts.chat_id AND participants.user_id=posts.uploader_user_id),''),COALESCE((SELECT name FROM participants WHERE participants.chat_id=posts.chat_id AND participants.user_id=posts.uploader_user_id),''),COALESCE((SELECT MAX(id) FROM author_changes WHERE author_changes.post_id=posts.id),0)"
 
 type scanner interface{ Scan(...any) error }
 
 func scanPost(row scanner) (domain.Post, error) {
 	var p domain.Post
-	err := row.Scan(&p.ID, &p.MediaID, &p.ChatID, &p.SourceMessageID, &p.BotMessageID, &p.State, &p.UploaderID)
+	err := row.Scan(&p.ID, &p.MediaID, &p.ChatID, &p.SourceMessageID, &p.BotMessageID, &p.State, &p.UploaderID, &p.AuthorUsername, &p.AuthorName, &p.AuthorRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, domain.ErrNotFound
 	}

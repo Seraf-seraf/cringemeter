@@ -15,6 +15,11 @@ import (
 )
 
 type fakeTelegram struct {
+	admin              bool
+	adminErr           error
+	lookupErr          error
+	selectedUsers      []domain.Participant
+	choices            int
 	ranks              []domain.Rank
 	group              domain.Group
 	tops               int
@@ -396,4 +401,16 @@ func TestSelfVoteShowsAlertWithoutChangingCountsOrKeyboard(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (f *fakeTelegram) IsAdmin(context.Context, int64, int64) (bool, error) {
+	return f.admin, f.adminErr
+}
+func (f *fakeTelegram) LookupParticipant(_ context.Context, _ int64, id int64) (domain.Participant, error) {
+	return domain.Participant{ID: id, Username: "selected"}, f.lookupErr
+}
+func (f *fakeTelegram) ChooseAuthor(_ context.Context, _ domain.Post, _ domain.Counts, page domain.ParticipantPage) error {
+	f.selectedUsers = page.Users
+	f.choices++
+	return nil
 }

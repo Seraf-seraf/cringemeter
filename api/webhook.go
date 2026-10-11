@@ -31,6 +31,8 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 	client := telegram.New(c.BotToken)
 	var incoming domain.Incoming
 	var ballot domain.Ballot
+	var authorAction domain.AuthorAction
+	var isAuthor bool
 	var group domain.Group
 	var isMedia, isTop, isRequest bool
 	var request domain.VideoRequest
@@ -39,10 +41,7 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 		request, isRequest = telegram.LinkRequest(u.Message)
 		if !isMedia && !isRequest {
 			address, ok := telegram.TopCommand(u.Message)
-			if !ok {
-				return nil
-			}
-			if address != "" {
+			if ok && address != "" {
 				username, err := client.Username(ctx)
 				if err != nil {
 					return err
@@ -51,12 +50,22 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 					return nil
 				}
 			}
-			isTop = true
+			isTop = ok
 			group = domain.Group{ID: u.Message.Chat.ID, Type: u.Message.Chat.Type, Username: u.Message.Chat.UserName}
+			if !ok {
+				if _, human := telegram.Participant(u.Message.From); !human || u.Message.SenderChat != nil {
+					return nil
+				}
+			}
 		}
 	} else if u.CallbackQuery != nil {
 		var ok bool
-		ballot, ok = telegram.Ballot(u.CallbackQuery)
+		authorAction, isAuthor = telegram.ParseAuthorAction(u.CallbackQuery)
+		if !isAuthor {
+			ballot, ok = telegram.Ballot(u.CallbackQuery)
+		} else {
+			ok = true
+		}
 		if !ok {
 			return client.Answer(ctx, u.CallbackQuery.ID, "Кнопка недоступна", false)
 		}
@@ -68,15 +77,42 @@ func process(ctx context.Context, c config.Config, u tg.Update) error {
 		return err
 	}
 	defer store.Close()
+	if u.Message != nil && u.Message.SenderChat == nil {
+		if actor, valid := telegram.Participant(u.Message.From); valid {
+			if err = store.RememberParticipant(ctx, c.ChatID, actor); err != nil {
+				return err
+			}
+		}
+		if incoming.SourceRequest != nil && u.Message.ReplyToMessage != nil {
+			if actor, valid := telegram.Participant(u.Message.ReplyToMessage.From); valid {
+				if err = store.RememberParticipant(ctx, c.ChatID, actor); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if u.CallbackQuery != nil && !isAuthor {
+		if actor, valid := telegram.Participant(u.CallbackQuery.From); valid {
+			if err = store.RememberParticipant(ctx, c.ChatID, actor); err != nil {
+				return err
+			}
+		}
+	}
 	if isRequest && !isMedia {
 		return store.RememberRequest(ctx, request)
 	}
 	service := app.Service{Store: store, Telegram: client, Now: time.Now}
+	if isAuthor {
+		return service.ManageAuthor(ctx, authorAction)
+	}
 	if isMedia {
 		return service.Publish(ctx, incoming)
 	}
 	if isTop {
 		return service.Ranking(ctx, group)
 	}
-	return service.RecordVote(ctx, ballot)
+	if u.CallbackQuery != nil {
+		return service.RecordVote(ctx, ballot)
+	}
+	return nil
 }
