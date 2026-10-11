@@ -65,7 +65,10 @@ func schemaObjects() map[string]string {
 	return objects
 }
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB  *sql.DB
+	now func() time.Time
+}
 
 var errMigrationRequired = errors.New("schema migration required")
 

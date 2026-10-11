@@ -38,6 +38,8 @@ type VideoRequest struct {
 	SentAt    int64
 }
 
+const DownloadRequestTTLSeconds int64 = 5 * 60
+
 func ValidYouTubeID(id string) bool {
 	if len(id) != 11 {
 		return false

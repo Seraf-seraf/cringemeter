@@ -6,11 +6,12 @@ import (
 	"handler/internal/domain"
 	"sync"
 	"testing"
+	"time"
 )
 
 func enqueue(t *testing.T, s *Store, msg int, user int64, ids ...string) domain.VideoRequest {
 	t.Helper()
-	r := domain.VideoRequest{ChatID: -100, MessageID: msg, UserID: user, VideoIDs: ids, SentAt: 1}
+	r := domain.VideoRequest{ChatID: -100, MessageID: msg, UserID: user, VideoIDs: ids, SentAt: s.queueNow()}
 	if err := s.RememberRequest(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
@@ -18,6 +19,114 @@ func enqueue(t *testing.T, s *Store, msg int, user int64, ids ...string) domain.
 }
 func downloaded(msg int, file string) domain.Incoming {
 	return domain.Incoming{ChatID: -100, MessageID: msg, MediaType: "video", UniqueID: file, SenderBotID: 99, AllowFIFO: true}
+}
+
+func TestDownloadFIFOExpiresAtFiveMinutes(t *testing.T) {
+	for _, age := range []int64{299, 300, 301} {
+		t.Run((time.Duration(age) * time.Second).String(), func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			s.now = func() time.Time { return time.Unix(1000-age, 0) }
+			r := enqueue(t, s, 1, 42, "abcdefghijk")
+			s.now = func() time.Time { return time.Unix(1000, 0) }
+			visible, err := s.PendingRequests(ctx, -100)
+			if err != nil || (len(visible) == 1) != (age < 300) {
+				t.Fatal("expired request is visible", visible, err)
+			}
+			p, err := s.Register(ctx, downloaded(2, "f"))
+			if err != nil || (p.UploaderID == 42) != (age < 300) {
+				t.Fatal("FIFO expiry boundary", age, p, err)
+			}
+			if err = s.RememberRequest(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			var remaining int
+			if err = s.DB.QueryRow(`SELECT COUNT(*) FROM download_requests`).Scan(&remaining); err != nil || (remaining == 1) != (age < 300) {
+				t.Fatal("expired request resurrected", remaining, err)
+			}
+		})
+	}
+}
+
+func TestDownloadCleanupPreservesReservedRequestAndHistory(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	enqueue(t, s, 1, 42, "abcdefghijk")
+	enqueue(t, s, 2, 43, "ZYXWVUTSRQP")
+	in := downloaded(3, "f")
+	p, err := s.Register(ctx, in)
+	if err != nil || p.UploaderID != 42 {
+		t.Fatal(p, err)
+	}
+	s.now = func() time.Time { return time.Unix(310, 0) }
+	enqueue(t, s, 4, 44, "aaaaaaaaaaa")
+	q, err := s.PendingRequests(ctx, -100)
+	if err != nil || len(q) != 2 || q[0].PostID != p.ID || q[1].UserID != 44 {
+		t.Fatal("cleanup deleted reservation or kept expired request", q, err)
+	}
+	again, err := s.Register(ctx, in)
+	if err != nil || again.ID != p.ID || again.UploaderID != 42 {
+		t.Fatal("expiry changed reserved author on replay", again, err)
+	}
+	next, err := s.Register(ctx, downloaded(5, "g"))
+	if err != nil || next.UploaderID != 44 {
+		t.Fatal("expired request stole new download", next, err)
+	}
+	publish(t, s, p, 101)
+	if err = s.Deleted(ctx, p.ID, 311); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.RecentUploads(ctx, -100)
+	if err != nil || len(rows) != 2 || rows[1].Evidence != "fifo" || rows[1].RequestMessageID != 1 || rows[1].UploaderID != 42 {
+		t.Fatal("cleanup removed attribution history", rows, err)
+	}
+}
+
+func TestDownloadExpiredReplyStillProvesSource(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	r := enqueue(t, s, 1, 42, "abcdefghijk")
+	s.now = func() time.Time { return time.Unix(310, 0) }
+	in := downloaded(2, "f")
+	in.SourceRequest = &r
+	p, err := s.Register(ctx, in)
+	if err != nil || p.UploaderID != 42 {
+		t.Fatal("FIFO timeout rejected explicit reply", p, err)
+	}
+	rows, err := s.RecentUploads(ctx, -100)
+	if err != nil || len(rows) != 1 || rows[0].Evidence != "reply" || !rows[0].Verified {
+		t.Fatal(rows, err)
+	}
+}
+
+func TestConcurrentDownloadExpiryAndReplayDoNotStealAuthor(t *testing.T) {
+	s := testStore(t)
+	s.DB.SetMaxOpenConns(4)
+	ctx := context.Background()
+	old := enqueue(t, s, 1, 42, "abcdefghijk")
+	s.now = func() time.Time { return time.Unix(309, 0) }
+	enqueue(t, s, 2, 43, "ZYXWVUTSRQP")
+	s.now = func() time.Time { return time.Unix(310, 0) }
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				p, err := s.Register(ctx, downloaded(3, "f"))
+				if err != nil || p.UploaderID != 43 {
+					t.Error("expired request stole author", p, err)
+				}
+			} else if err := s.RememberRequest(ctx, old); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	var requests, posts, attrs int
+	if err := s.DB.QueryRow(`SELECT (SELECT COUNT(*) FROM download_requests),(SELECT COUNT(*) FROM posts),(SELECT COUNT(*) FROM download_attributions)`).Scan(&requests, &posts, &attrs); err != nil || requests != 1 || posts != 1 || attrs != 1 {
+		t.Fatal("cleanup/replay duplicated or resurrected request", requests, posts, attrs, err)
+	}
 }
 
 func TestDownloadFIFOReservationReplayCompletionAndEvidence(t *testing.T) {

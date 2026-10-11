@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/WillowWorks-io/libsql-client-go/libsql"
 	"handler/internal/domain"
@@ -20,7 +21,7 @@ func testStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Store{DB: sql.OpenDB(connector)}
+	s := &Store{DB: sql.OpenDB(connector), now: func() time.Time { return time.Unix(10, 0) }}
 	s.DB.SetMaxOpenConns(1)
 	t.Cleanup(func() { s.Close() })
 	if err := s.Migrate(context.Background()); err != nil {

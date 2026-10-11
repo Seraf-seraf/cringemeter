@@ -51,6 +51,20 @@ func validRequest(r domain.VideoRequest) bool {
 	return true
 }
 
+func (s *Store) queueNow() int64 {
+	if s.now != nil {
+		return s.now().Unix()
+	}
+	return time.Now().Unix()
+}
+
+// A reserved request belongs to a publication, including failed/retried copies.
+// Expire only unused requests while holding the same lock as reservation.
+func expireRequests(ctx context.Context, conn *sql.Conn, chatID, cutoff int64) error {
+	_, err := conn.ExecContext(ctx, `DELETE FROM download_requests WHERE chat_id=? AND post_id IS NULL AND sent_at<=?`, chatID, cutoff)
+	return err
+}
+
 func remember(ctx context.Context, conn *sql.Conn, r domain.VideoRequest) error {
 	if !validRequest(r) {
 		return domain.ErrInvalid
@@ -70,7 +84,17 @@ func (s *Store) RememberRequest(ctx context.Context, r domain.VideoRequest) erro
 	if !validRequest(r) {
 		return domain.ErrInvalid
 	}
-	return s.immediate(ctx, func(conn *sql.Conn) error { return remember(ctx, conn, r) })
+	return s.immediate(ctx, func(conn *sql.Conn) error {
+		cutoff := s.queueNow() - domain.DownloadRequestTTLSeconds
+		if err := expireRequests(ctx, conn, r.ChatID, cutoff); err != nil {
+			return err
+		}
+		// A delayed/replayed webhook must not restart the original deadline.
+		if r.SentAt <= cutoff {
+			return nil
+		}
+		return remember(ctx, conn, r)
+	})
 }
 
 func (s *Store) RegisterDownloader(ctx context.Context, botID int64) error {
@@ -172,6 +196,9 @@ func (s *Store) Register(ctx context.Context, in domain.Incoming) (p domain.Post
 		return p, domain.ErrInvalid
 	}
 	err = s.immediate(ctx, func(conn *sql.Conn) error {
+		if err := expireRequests(ctx, conn, in.ChatID, s.queueNow()-domain.DownloadRequestTTLSeconds); err != nil {
+			return err
+		}
 		var lookup error
 		p, lookup = scanPost(conn.QueryRowContext(ctx, "SELECT "+postColumns+" FROM posts WHERE chat_id=? AND source_message_id=?", in.ChatID, in.MessageID))
 		if lookup == nil {

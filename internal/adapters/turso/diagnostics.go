@@ -61,7 +61,7 @@ func (s *Store) PendingRequests(ctx context.Context, chatID int64) ([]RequestDia
 	if chatID >= 0 {
 		return nil, domain.ErrInvalid
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT source_message_id,youtube_video_id,user_id,COALESCE(post_id,0) FROM download_requests WHERE chat_id=? ORDER BY source_message_id,youtube_video_id LIMIT 20`, chatID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT source_message_id,youtube_video_id,user_id,COALESCE(post_id,0) FROM download_requests WHERE chat_id=? AND (post_id IS NOT NULL OR sent_at>?) ORDER BY source_message_id,youtube_video_id LIMIT 20`, chatID, s.queueNow()-domain.DownloadRequestTTLSeconds)
 	if err != nil {
 		return nil, err
 	}
