@@ -109,11 +109,14 @@ func TestMediaMapping(t *testing.T) {
 }
 
 func TestUserTopEscapesNamesAndShowsPercentage(t *testing.T) {
-	text := TopText([]domain.Rank{{UserID: 7, Percentage: 100, Votes: 1, Name: `Аня <script> & Борис`}, {UserID: 8, Percentage: 1, Votes: 100}})
-	for _, want := range []string{"👑 Короли кринжа", `href="tg://user?id=7"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100% · 1 голос", "Пользователь 8"} {
+	text := TopText([]domain.Rank{{UserID: 7, Percentage: 100, Votes: 1, Name: `Аня <script> & Борис`, Username: "anya"}, {UserID: 8, Percentage: 1, Votes: 100}})
+	for _, want := range []string{"👑 Короли кринжа", `href="https://t.me/anya"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100% · 1 голос", "Пользователь 8"} {
 		if !strings.Contains(text, want) {
 			t.Fatal(text, want)
 		}
+	}
+	if strings.Contains(text, "tg://user?id=") {
+		t.Fatal("leaderboard must not mention users by ID")
 	}
 	if !strings.Contains(TopText(nil), "Пока нет пользователей") {
 		t.Fatal("empty top")

@@ -170,7 +170,12 @@ func TopText(ranks []domain.Rank) string {
 		if name == "" {
 			name = "Пользователь " + strconv.FormatInt(r.UserID, 10)
 		}
-		fmt.Fprintf(&text, "%d. <a href=\"tg://user?id=%d\">%s</a> — 🤡 %.0f%% · %d %s\n", i+1, r.UserID, html.EscapeString(name), math.Round(r.Percentage), r.Votes, voteWord(r.Votes))
+		if r.Username != "" {
+			fmt.Fprintf(&text, "%d. <a href=\"https://t.me/%s\">%s</a>", i+1, html.EscapeString(r.Username), html.EscapeString(name))
+		} else {
+			fmt.Fprintf(&text, "%d. %s", i+1, html.EscapeString(name))
+		}
+		fmt.Fprintf(&text, " — 🤡 %.0f%% · %d %s\n", math.Round(r.Percentage), r.Votes, voteWord(r.Votes))
 	}
 	return text.String()
 }
@@ -203,6 +208,7 @@ func (c *Client) SendTop(ctx context.Context, group domain.Group, ranks []domain
 		}
 		if err := c.Call(namesCtx, "getChatMember", map[string]any{"chat_id": group.ID, "user_id": ranks[i].UserID}, &member); err == nil {
 			ranks[i].Name = strings.TrimSpace(member.User.FirstName + " " + member.User.LastName)
+			ranks[i].Username = member.User.UserName
 			if ranks[i].Name == "" {
 				ranks[i].Name = member.User.UserName
 			}

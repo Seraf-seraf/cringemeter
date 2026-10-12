@@ -98,6 +98,7 @@ type Rank struct {
 	Votes       int64
 	WilsonScore float64
 	Name        string
+	Username    string
 }
 
 type APIError struct {
