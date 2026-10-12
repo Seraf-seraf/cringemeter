@@ -93,9 +93,9 @@ type Counts struct{ Cringe, NonCringe int64 }
 func (c Counts) Total() int64 { return c.Cringe + c.NonCringe }
 
 type Rank struct {
-	UserID int64
-	Score  int64
-	Name   string
+	UserID     int64
+	Percentage float64
+	Name       string
 }
 
 type APIError struct {

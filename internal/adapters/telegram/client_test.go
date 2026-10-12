@@ -107,15 +107,35 @@ func TestMediaMapping(t *testing.T) {
 	}
 }
 
-func TestUserTopEscapesNamesAndShowsAbsoluteScore(t *testing.T) {
-	text := TopText([]domain.Rank{{UserID: 7, Score: 100, Name: `Аня <script> & Борис`}, {UserID: 8, Score: 1}})
-	for _, want := range []string{"👑 Короли кринжа", `href="tg://user?id=7"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100", "Пользователь 8"} {
+func TestUserTopEscapesNamesAndShowsPercentage(t *testing.T) {
+	text := TopText([]domain.Rank{{UserID: 7, Percentage: 100, Name: `Аня <script> & Борис`}, {UserID: 8, Percentage: 1}})
+	for _, want := range []string{"👑 Короли кринжа", `href="tg://user?id=7"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100%", "Пользователь 8"} {
 		if !strings.Contains(text, want) {
 			t.Fatal(text, want)
 		}
 	}
 	if !strings.Contains(TopText(nil), "Пока нет пользователей") {
 		t.Fatal("empty top")
+	}
+}
+
+func TestTopRoundsPercentagesToWholeNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		percentage float64
+		text       string
+	}{
+		{0, "🤡 0%"},
+		{0.5, "🤡 1%"},
+		{62.49, "🤡 62%"},
+		{62.5, "🤡 63%"},
+		{100.0 * 2 / 3, "🤡 67%"},
+		{99.5, "🤡 100%"},
+		{100, "🤡 100%"},
+	} {
+		text := TopText([]domain.Rank{{UserID: 7, Percentage: tc.percentage}})
+		if !strings.Contains(text, tc.text+"\n") {
+			t.Fatal("incorrect mathematical rounding", tc.percentage, text)
+		}
 	}
 }
 
@@ -176,7 +196,7 @@ func TestTopStillSendsWhenOptionalNameLookupTimesOut(t *testing.T) {
 	c.BaseURL = server.URL
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	if err := c.SendTop(ctx, domain.Group{ID: -100}, []domain.Rank{{UserID: 1, Score: 3}, {UserID: 2, Score: 2}, {UserID: 3, Score: 1}}); err != nil {
+	if err := c.SendTop(ctx, domain.Group{ID: -100}, []domain.Rank{{UserID: 1, Percentage: 3}, {UserID: 2, Percentage: 2}, {UserID: 3, Percentage: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	select {

@@ -74,7 +74,7 @@ func TestAdministratorChoosesKnownHumanAndMovesVotesOnAllCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	top, err := store.Top(ctx, -100)
-	if err != nil || len(top) != 1 || top[0].UserID != 43 || top[0].Score != 1 {
+	if err != nil || len(top) != 1 || top[0].UserID != 43 || top[0].Percentage != 100 {
 		t.Fatal(top, err)
 	}
 	if len(tg.edits) != 2 {

@@ -383,9 +383,12 @@ func (s *Store) Copies(ctx context.Context, postID, afterID int64, limit int) ([
 }
 
 func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT s.user_id,s.score FROM user_scores s
- JOIN score_positions r ON r.chat_id=s.chat_id AND r.user_id=s.user_id AND r.score=s.score
- WHERE s.chat_id=? AND s.score>0 AND NOT EXISTS (SELECT 1 FROM bot_senders b WHERE b.user_id=s.user_id) ORDER BY s.score DESC,r.id ASC LIMIT 3`, chatID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT p.uploader_user_id,100.0*SUM(v.vote)/COUNT(*) AS percentage
+ FROM (SELECT DISTINCT media_id,uploader_user_id FROM posts WHERE chat_id=? AND uploader_user_id>0) p
+ JOIN author_votes v ON v.media_id=p.media_id AND v.uploader_user_id=p.uploader_user_id
+ WHERE v.user_id!=v.uploader_user_id AND NOT EXISTS (SELECT 1 FROM bot_senders b WHERE b.user_id=p.uploader_user_id)
+ GROUP BY p.uploader_user_id
+ ORDER BY percentage DESC,COUNT(*) DESC,p.uploader_user_id ASC LIMIT 3`, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +396,7 @@ func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
 	var ranks []domain.Rank
 	for rows.Next() {
 		var r domain.Rank
-		if err := rows.Scan(&r.UserID, &r.Score); err != nil {
+		if err := rows.Scan(&r.UserID, &r.Percentage); err != nil {
 			return nil, err
 		}
 		ranks = append(ranks, r)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -160,16 +161,16 @@ func Ballot(q *tg.CallbackQuery) (domain.Ballot, bool) {
 
 func TopText(ranks []domain.Rank) string {
 	if len(ranks) == 0 {
-		return "👑 Короли кринжа\nПока нет пользователей с положительным счётом."
+		return "👑 Короли кринжа\nПока нет пользователей с голосами."
 	}
 	var text strings.Builder
-	text.WriteString("<b>👑 Короли кринжа</b>\nСчёт: Кринж − Некринж\n")
+	text.WriteString("<b>👑 Короли кринжа</b>\nРейтинг: Кринж / все голоса × 100%\n")
 	for i, r := range ranks {
 		name := r.Name
 		if name == "" {
 			name = "Пользователь " + strconv.FormatInt(r.UserID, 10)
 		}
-		fmt.Fprintf(&text, "%d. <a href=\"tg://user?id=%d\">%s</a> — 🤡 %d\n", i+1, r.UserID, html.EscapeString(name), r.Score)
+		fmt.Fprintf(&text, "%d. <a href=\"tg://user?id=%d\">%s</a> — 🤡 %.0f%%\n", i+1, r.UserID, html.EscapeString(name), math.Round(r.Percentage))
 	}
 	return text.String()
 }

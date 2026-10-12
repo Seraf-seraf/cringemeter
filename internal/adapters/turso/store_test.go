@@ -192,6 +192,49 @@ func voteFor(t *testing.T, s *Store, p domain.Post, voter int64, value int) {
 		t.Fatal(err)
 	}
 }
+
+func TestTopUsesVoteShareBeforeRoundingAndLimitsToThree(t *testing.T) {
+	type postVotes struct {
+		owner         int64
+		cringe, total int
+	}
+	for _, tc := range []struct {
+		name        string
+		posts       []postVotes
+		users       []int64
+		percentages []float64
+	}{
+		{"weighted across videos", []postVotes{{50, 1, 1}, {50, 2, 10}, {10, 1, 2}}, []int64{10, 50}, []float64{50, 300.0 / 11}},
+		{"unrounded share before vote count", []postVotes{{10, 31, 50}, {50, 23, 37}}, []int64{50, 10}, []float64{2300.0 / 37, 62}},
+		{"share before absolute likes", []postVotes{{10, 3, 4}, {50, 2, 2}}, []int64{50, 10}, []float64{100, 75}},
+		{"ties by vote count and user ID", []postVotes{{20, 1, 2}, {10, 1, 2}, {30, 2, 4}, {40, 1, 2}}, []int64{30, 10, 20}, []float64{50, 50, 50}},
+		{"zero percent but no empty vote pool", []postVotes{{10, 0, 0}, {50, 0, 1}}, []int64{50}, []float64{0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t)
+			for i, input := range tc.posts {
+				p := ownedPost(t, s, i+1, "file"+string(rune('a'+i)), input.owner)
+				for voter := 0; voter < input.total; voter++ {
+					value := 0
+					if voter < input.cringe {
+						value = 1
+					}
+					voteFor(t, s, p, int64(1000+voter), value)
+				}
+			}
+			top, err := s.Top(context.Background(), -100)
+			if err != nil || len(top) != len(tc.users) {
+				t.Fatal("incorrect eligible top", top, err)
+			}
+			for i, user := range tc.users {
+				if top[i].UserID != user || top[i].Percentage != tc.percentages[i] {
+					t.Fatal("incorrect percentage order", top, tc.users)
+				}
+			}
+		})
+	}
+}
+
 func TestUserRankingSeparatesAuthorsDeduplicatesFilesAndBreaksTies(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -201,7 +244,7 @@ func TestUserRankingSeparatesAuthorsDeduplicatesFilesAndBreaksTies(t *testing.T)
 	aOther := ownedPost(t, s, 4, "other", 50)
 	voteFor(t, s, a, 999, 1)
 	top, err := s.Top(ctx, -100)
-	if err != nil || len(top) != 1 || top[0].UserID != 50 || top[0].Score != 1 {
+	if err != nil || len(top) != 1 || top[0].UserID != 50 || top[0].Percentage != 100 {
 		t.Fatal(top, err)
 	}
 	c, _ := s.Counts(ctx, b.ID)
@@ -215,23 +258,23 @@ func TestUserRankingSeparatesAuthorsDeduplicatesFilesAndBreaksTies(t *testing.T)
 	voteFor(t, s, aRepeat, 999, 1)
 	voteFor(t, s, b, 999, 1)
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 2 || top[0].UserID != 50 {
+	if err != nil || len(top) != 2 || top[0].UserID != 10 || top[0].Percentage != 100 || top[1].Percentage != 100 {
 		t.Fatal(top, err)
 	}
 	voteFor(t, s, aOther, 999, 1)
 	voteFor(t, s, b, 998, 0)
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 1 || top[0].Score != 2 {
+	if err != nil || len(top) != 2 || top[0].UserID != 50 || top[0].Percentage != 100 || top[1].Percentage != 50 {
 		t.Fatal(top, err)
 	}
-	voteFor(t, s, b, 998, 1) // Switching -1 to +1 adds two points.
+	voteFor(t, s, b, 998, 1)
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 2 || top[0].UserID != 50 || top[1].Score != 2 {
+	if err != nil || len(top) != 2 || top[0].UserID != 10 || top[0].Percentage != 100 || top[1].Percentage != 100 {
 		t.Fatal(top, err)
 	}
-	voteFor(t, s, aOther, 999, 0) // Switching +1 to -1 takes two points.
+	voteFor(t, s, aOther, 999, 0)
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 1 || top[0].UserID != 10 {
+	if err != nil || len(top) != 2 || top[0].UserID != 10 || top[0].Percentage != 100 || top[1].Percentage != 50 {
 		t.Fatal(top, err)
 	}
 	voteFor(t, s, aOther, 999, 1)
@@ -279,7 +322,7 @@ func TestConcurrentUserScoresAreAtomicAndReplayStable(t *testing.T) {
 	}
 	wg.Wait()
 	top, err := s.Top(ctx, -100)
-	if err != nil || len(top) != 2 || top[0].Score != 40 || top[1].Score != 40 {
+	if err != nil || len(top) != 2 || top[0].Percentage != 100 || top[1].Percentage != 100 {
 		t.Fatal(top, err)
 	}
 	first := top[0].UserID
@@ -378,7 +421,7 @@ func TestMigrationResetsLegacyVotesOnceAndRejectsLateLegacyWrites(t *testing.T) 
 		t.Fatal(err)
 	}
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 2 || top[0].UserID != 50 || top[1].UserID != 10 {
+	if err != nil || len(top) != 2 || top[0].UserID != 10 || top[1].UserID != 50 || top[0].Percentage != 100 || top[1].Percentage != 100 {
 		t.Fatal(top, err)
 	}
 	var archive int
@@ -388,7 +431,7 @@ func TestMigrationResetsLegacyVotesOnceAndRejectsLateLegacyWrites(t *testing.T) 
 }
 func ptr(v int64) *int64 { return &v }
 
-func TestNegativeMediaBalanceOffsetsOtherVideosAndOnlyPositiveUsersRank(t *testing.T) {
+func TestAllVideoVotesContributeToAuthorPercentage(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	a := ownedPost(t, s, 1, "negative", 50)
@@ -401,17 +444,17 @@ func TestNegativeMediaBalanceOffsetsOtherVideosAndOnlyPositiveUsersRank(t *testi
 		t.Fatal(score, err)
 	}
 	top, err := s.Top(ctx, -100)
-	if err != nil || len(top) != 0 {
+	if err != nil || len(top) != 1 || top[0].Percentage != 100.0/3 {
 		t.Fatal(top, err)
 	}
 	voteFor(t, s, b, 2, 1)
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 0 {
+	if err != nil || len(top) != 1 || top[0].Percentage != 50 {
 		t.Fatal(top, err)
 	}
 	voteFor(t, s, b, 3, 1)
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 1 || top[0].Score != 1 {
+	if err != nil || len(top) != 1 || top[0].Percentage != 60 {
 		t.Fatal(top, err)
 	}
 	counts, err := s.Counts(ctx, a.ID)
@@ -531,7 +574,7 @@ func TestNetMigrationPreservesVotesTieOrderAndManualCleanupRemovesOnlySelfVotes(
 	}
 	voteFor(t, s, a, 997, 1) // -1 -> +1 gives net +1.
 	top, err := s.Top(ctx, -100)
-	if err != nil || len(top) != 1 || top[0].UserID != 50 || top[0].Score != 1 {
+	if err != nil || len(top) != 2 || top[0].UserID != 50 || top[0].Percentage != 200.0/3 || top[1].UserID != 10 || top[1].Percentage != 50 {
 		t.Fatal(top, err)
 	}
 }
