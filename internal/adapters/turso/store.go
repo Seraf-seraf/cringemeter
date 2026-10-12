@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -383,12 +384,11 @@ func (s *Store) Copies(ctx context.Context, postID, afterID int64, limit int) ([
 }
 
 func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT p.uploader_user_id,100.0*SUM(v.vote)/COUNT(*) AS percentage
+	rows, err := s.DB.QueryContext(ctx, `SELECT p.uploader_user_id,SUM(v.vote),COUNT(*)-SUM(v.vote)
  FROM (SELECT DISTINCT media_id,uploader_user_id FROM posts WHERE chat_id=? AND uploader_user_id>0) p
  JOIN author_votes v ON v.media_id=p.media_id AND v.uploader_user_id=p.uploader_user_id
  WHERE v.user_id!=v.uploader_user_id AND NOT EXISTS (SELECT 1 FROM bot_senders b WHERE b.user_id=p.uploader_user_id)
- GROUP BY p.uploader_user_id
- ORDER BY percentage DESC,COUNT(*) DESC,p.uploader_user_id ASC LIMIT 3`, chatID)
+ GROUP BY p.uploader_user_id`, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -396,12 +396,32 @@ func (s *Store) Top(ctx context.Context, chatID int64) ([]domain.Rank, error) {
 	var ranks []domain.Rank
 	for rows.Next() {
 		var r domain.Rank
-		if err := rows.Scan(&r.UserID, &r.Percentage); err != nil {
+		var counts domain.Counts
+		if err := rows.Scan(&r.UserID, &counts.Cringe, &counts.NonCringe); err != nil {
 			return nil, err
 		}
+		r.Votes = counts.Total()
+		r.Percentage = 100 * float64(counts.Cringe) / float64(r.Votes)
+		r.WilsonScore = counts.WilsonLowerBound()
 		ranks = append(ranks, r)
 	}
-	return ranks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(ranks, func(i, j int) bool {
+		a, b := ranks[i], ranks[j]
+		if a.WilsonScore != b.WilsonScore {
+			return a.WilsonScore > b.WilsonScore
+		}
+		if a.Votes != b.Votes {
+			return a.Votes > b.Votes
+		}
+		return a.UserID < b.UserID
+	})
+	if len(ranks) > domain.TopSize {
+		ranks = ranks[:domain.TopSize]
+	}
+	return ranks, nil
 }
 
 func (s *Store) Unavailable(ctx context.Context, id int64) error {

@@ -193,7 +193,43 @@ func voteFor(t *testing.T, s *Store, p domain.Post, voter int64, value int) {
 	}
 }
 
-func TestTopUsesVoteShareBeforeRoundingAndLimitsToThree(t *testing.T) {
+func TestWilsonTopConsidersAllAuthorsBeforeChoosingThree(t *testing.T) {
+	s := testStore(t)
+	for i := 1; i <= 4; i++ {
+		p := ownedPost(t, s, i, "same-video", int64(i))
+		votes := 1
+		if i == 4 {
+			votes = 10
+		}
+		for v := 0; v < votes; v++ {
+			value := 1
+			if v == 9 {
+				value = 0
+			}
+			voteFor(t, s, p, int64(1000+v), value)
+		}
+	}
+	top, err := s.Top(context.Background(), -100)
+	if err != nil || len(top) != 3 || top[0].UserID != 4 || top[0].Percentage != 90 || top[0].Votes != 10 || top[1].UserID != 1 || top[1].Votes != 1 || top[2].UserID != 2 {
+		t.Fatal("9/10 must outrank all three 1/1 authors", top, err)
+	}
+	if top[0].WilsonScore <= top[1].WilsonScore {
+		t.Fatal("ranking used the displayed percentage", top)
+	}
+	repeat := ownedPost(t, s, 5, "same-video", 4)
+	voteFor(t, s, repeat, 1000, 1)
+	again, err := s.Top(context.Background(), -100)
+	if err != nil || len(again) != len(top) {
+		t.Fatal(again, err)
+	}
+	for i := range top {
+		if again[i] != top[i] {
+			t.Fatal("repeated file or vote changed the ranking", top, again)
+		}
+	}
+}
+
+func TestTopUsesWilsonScoreBeforeRoundingAndLimitsToThree(t *testing.T) {
 	type postVotes struct {
 		owner         int64
 		cringe, total int
@@ -204,10 +240,11 @@ func TestTopUsesVoteShareBeforeRoundingAndLimitsToThree(t *testing.T) {
 		users       []int64
 		percentages []float64
 	}{
-		{"weighted across videos", []postVotes{{50, 1, 1}, {50, 2, 10}, {10, 1, 2}}, []int64{10, 50}, []float64{50, 300.0 / 11}},
-		{"unrounded share before vote count", []postVotes{{10, 31, 50}, {50, 23, 37}}, []int64{50, 10}, []float64{2300.0 / 37, 62}},
-		{"share before absolute likes", []postVotes{{10, 3, 4}, {50, 2, 2}}, []int64{50, 10}, []float64{100, 75}},
-		{"ties by vote count and user ID", []postVotes{{20, 1, 2}, {10, 1, 2}, {30, 2, 4}, {40, 1, 2}}, []int64{30, 10, 20}, []float64{50, 50, 50}},
+		{"weighted across videos", []postVotes{{50, 1, 1}, {50, 2, 10}, {10, 1, 2}}, []int64{50, 10}, []float64{300.0 / 11, 50}},
+		{"sample size can outweigh slightly higher share", []postVotes{{10, 31, 50}, {50, 23, 37}}, []int64{10, 50}, []float64{62, 2300.0 / 37}},
+		{"unrounded Wilson score before vote count", []postVotes{{10, 13, 39}, {50, 1, 1}}, []int64{50, 10}, []float64{100, 100.0 / 3}},
+		{"Wilson before absolute likes", []postVotes{{10, 3, 4}, {50, 2, 2}}, []int64{50, 10}, []float64{100, 75}},
+		{"ties by vote count and user ID", []postVotes{{20, 0, 2}, {10, 0, 2}, {30, 0, 4}, {40, 0, 2}}, []int64{30, 10, 20}, []float64{0, 0, 0}},
 		{"zero percent but no empty vote pool", []postVotes{{10, 0, 0}, {50, 0, 1}}, []int64{50}, []float64{0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,7 +265,7 @@ func TestTopUsesVoteShareBeforeRoundingAndLimitsToThree(t *testing.T) {
 			}
 			for i, user := range tc.users {
 				if top[i].UserID != user || top[i].Percentage != tc.percentages[i] {
-					t.Fatal("incorrect percentage order", top, tc.users)
+					t.Fatal("incorrect Wilson order or displayed percentage", top, tc.users)
 				}
 			}
 		})

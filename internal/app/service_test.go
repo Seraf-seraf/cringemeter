@@ -380,13 +380,13 @@ func TestRankingShowsUsersFromFirstCringeVote(t *testing.T) {
 	if err := s.RecordVote(ctx, domain.Ballot{PostID: 1, ChatID: -100, MessageID: 101, UserID: 7, Vote: 1, CallbackID: "a"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Ranking(ctx, g); err != nil || len(tg.ranks) != 1 || tg.ranks[0].UserID != 42 || tg.ranks[0].Percentage != 100 {
+	if err := s.Ranking(ctx, g); err != nil || len(tg.ranks) != 1 || tg.ranks[0].UserID != 42 || tg.ranks[0].Percentage != 100 || tg.ranks[0].Votes != 1 || tg.ranks[0].WilsonScore <= 0 {
 		t.Fatal(err, tg.ranks)
 	}
 	if err := store.Unavailable(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Ranking(ctx, g); err != nil || tg.ranks[0].Percentage != 100 {
+	if err := s.Ranking(ctx, g); err != nil || tg.ranks[0].Percentage != 100 || tg.ranks[0].Votes != 1 {
 		t.Fatal(err, tg.ranks)
 	}
 }

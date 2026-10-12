@@ -164,15 +164,29 @@ func TopText(ranks []domain.Rank) string {
 		return "👑 Короли кринжа\nПока нет пользователей с голосами."
 	}
 	var text strings.Builder
-	text.WriteString("<b>👑 Короли кринжа</b>\nРейтинг: Кринж / все голоса × 100%\n")
+	text.WriteString("<b>👑 Короли кринжа</b>\nРейтинг учитывает долю кринжа и число голосов.\n")
 	for i, r := range ranks {
 		name := r.Name
 		if name == "" {
 			name = "Пользователь " + strconv.FormatInt(r.UserID, 10)
 		}
-		fmt.Fprintf(&text, "%d. <a href=\"tg://user?id=%d\">%s</a> — 🤡 %.0f%%\n", i+1, r.UserID, html.EscapeString(name), math.Round(r.Percentage))
+		fmt.Fprintf(&text, "%d. <a href=\"tg://user?id=%d\">%s</a> — 🤡 %.0f%% · %d %s\n", i+1, r.UserID, html.EscapeString(name), math.Round(r.Percentage), r.Votes, voteWord(r.Votes))
 	}
 	return text.String()
+}
+
+func voteWord(votes int64) string {
+	if votes%100 >= 11 && votes%100 <= 14 {
+		return "голосов"
+	}
+	switch votes % 10 {
+	case 1:
+		return "голос"
+	case 2, 3, 4:
+		return "голоса"
+	default:
+		return "голосов"
+	}
 }
 
 func (c *Client) SendTop(ctx context.Context, group domain.Group, ranks []domain.Rank) error {

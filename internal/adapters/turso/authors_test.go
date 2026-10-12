@@ -40,7 +40,7 @@ func TestAuthorChangeMovesOneLogicalPostItsVotesAndTop(t *testing.T) {
 		t.Fatal(counts, err)
 	}
 	top, err := s.Top(ctx, -100)
-	if err != nil || len(top) != 2 || top[0].UserID != 42 || top[0].Percentage != 100 || top[1].UserID != 43 || top[1].Percentage != 200.0/3 {
+	if err != nil || len(top) != 2 || top[0].UserID != 43 || top[0].Percentage != 200.0/3 || top[0].Votes != 3 || top[1].UserID != 42 || top[1].Percentage != 100 || top[1].Votes != 1 {
 		t.Fatal(top, err)
 	}
 	if _, err = s.ChangeAuthor(ctx, authorAction(p, 44), 11); !errors.Is(err, domain.ErrConflict) {
@@ -84,7 +84,7 @@ func TestAuthorChangeMergesExistingPairAndRejectsNewSelfVote(t *testing.T) {
 	}
 }
 
-func TestAuthorTransferUpdatesPercentageWhenNetScoreUnchanged(t *testing.T) {
+func TestAuthorTransferUpdatesWilsonRankingWhenNetScoreUnchanged(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	old := ownedPost(t, s, 1, "a", 42)
@@ -99,7 +99,7 @@ func TestAuthorTransferUpdatesPercentageWhenNetScoreUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := s.Top(ctx, -100)
-	if len(before) != 3 || before[0].UserID != 43 || before[0].Percentage != 100 || len(after) != 2 || after[0].UserID != 44 || after[0].Percentage != 100 || after[1].UserID != 43 || after[1].Percentage != 200.0/3 {
+	if len(before) != 3 || before[0].UserID != 43 || before[0].Percentage != 100 || before[0].Votes != 1 || len(after) != 2 || after[0].UserID != 43 || after[0].Percentage != 200.0/3 || after[0].Votes != 3 || after[0].WilsonScore <= before[0].WilsonScore || after[1].UserID != 44 || after[1].Percentage != 100 {
 		t.Fatal(before, after)
 	}
 }

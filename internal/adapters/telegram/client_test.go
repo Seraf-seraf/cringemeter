@@ -8,6 +8,7 @@ import (
 	"handler/internal/domain"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,8 +109,8 @@ func TestMediaMapping(t *testing.T) {
 }
 
 func TestUserTopEscapesNamesAndShowsPercentage(t *testing.T) {
-	text := TopText([]domain.Rank{{UserID: 7, Percentage: 100, Name: `Аня <script> & Борис`}, {UserID: 8, Percentage: 1}})
-	for _, want := range []string{"👑 Короли кринжа", `href="tg://user?id=7"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100%", "Пользователь 8"} {
+	text := TopText([]domain.Rank{{UserID: 7, Percentage: 100, Votes: 1, Name: `Аня <script> & Борис`}, {UserID: 8, Percentage: 1, Votes: 100}})
+	for _, want := range []string{"👑 Короли кринжа", `href="tg://user?id=7"`, "Аня &lt;script&gt; &amp; Борис", "🤡 100% · 1 голос", "Пользователь 8"} {
 		if !strings.Contains(text, want) {
 			t.Fatal(text, want)
 		}
@@ -132,9 +133,26 @@ func TestTopRoundsPercentagesToWholeNumbers(t *testing.T) {
 		{99.5, "🤡 100%"},
 		{100, "🤡 100%"},
 	} {
-		text := TopText([]domain.Rank{{UserID: 7, Percentage: tc.percentage}})
-		if !strings.Contains(text, tc.text+"\n") {
+		text := TopText([]domain.Rank{{UserID: 7, Percentage: tc.percentage, Votes: 10}})
+		if !strings.Contains(text, tc.text+" · 10 голосов\n") {
 			t.Fatal("incorrect mathematical rounding", tc.percentage, text)
+		}
+	}
+}
+
+func TestTopShowsVoteCountsWithRussianPluralForms(t *testing.T) {
+	for _, tc := range []struct {
+		votes int64
+		word  string
+	}{
+		{1, "голос"}, {2, "голоса"}, {4, "голоса"}, {5, "голосов"},
+		{11, "голосов"}, {12, "голосов"}, {14, "голосов"},
+		{21, "голос"}, {22, "голоса"}, {25, "голосов"}, {111, "голосов"},
+	} {
+		text := TopText([]domain.Rank{{UserID: 7, Percentage: 90, Votes: tc.votes}})
+		want := "90% · " + strconv.FormatInt(tc.votes, 10) + " " + tc.word + "\n"
+		if !strings.Contains(text, want) {
+			t.Fatal("incorrect vote count text", text, want)
 		}
 	}
 }
