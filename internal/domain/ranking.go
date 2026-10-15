@@ -2,7 +2,7 @@ package domain
 
 import "math"
 
-const TopSize = 3
+const TopSize = 10
 const wilson95Z = 1.96
 
 func (c Counts) WilsonLowerBound() float64 {

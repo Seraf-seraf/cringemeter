@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -193,12 +194,12 @@ func voteFor(t *testing.T, s *Store, p domain.Post, voter int64, value int) {
 	}
 }
 
-func TestWilsonTopConsidersAllAuthorsBeforeChoosingThree(t *testing.T) {
+func TestWilsonTopConsidersAllAuthorsBeforeChoosingTen(t *testing.T) {
 	s := testStore(t)
-	for i := 1; i <= 4; i++ {
+	for i := 1; i <= 11; i++ {
 		p := ownedPost(t, s, i, "same-video", int64(i))
 		votes := 1
-		if i == 4 {
+		if i == 11 {
 			votes = 10
 		}
 		for v := 0; v < votes; v++ {
@@ -210,13 +211,13 @@ func TestWilsonTopConsidersAllAuthorsBeforeChoosingThree(t *testing.T) {
 		}
 	}
 	top, err := s.Top(context.Background(), -100)
-	if err != nil || len(top) != 3 || top[0].UserID != 4 || top[0].Percentage != 90 || top[0].Votes != 10 || top[1].UserID != 1 || top[1].Votes != 1 || top[2].UserID != 2 {
-		t.Fatal("9/10 must outrank all three 1/1 authors", top, err)
+	if err != nil || len(top) != 10 || top[0].UserID != 11 || top[0].Percentage != 90 || top[0].Votes != 10 || top[1].UserID != 1 || top[1].Votes != 1 || top[2].UserID != 2 {
+		t.Fatal("9/10 must outrank all ten 1/1 authors", top, err)
 	}
 	if top[0].WilsonScore <= top[1].WilsonScore {
 		t.Fatal("ranking used the displayed percentage", top)
 	}
-	repeat := ownedPost(t, s, 5, "same-video", 4)
+	repeat := ownedPost(t, s, 12, "same-video", 11)
 	voteFor(t, s, repeat, 1000, 1)
 	again, err := s.Top(context.Background(), -100)
 	if err != nil || len(again) != len(top) {
@@ -229,7 +230,31 @@ func TestWilsonTopConsidersAllAuthorsBeforeChoosingThree(t *testing.T) {
 	}
 }
 
-func TestTopUsesWilsonScoreBeforeRoundingAndLimitsToThree(t *testing.T) {
+func TestTopAuthorLimit(t *testing.T) {
+	for _, count := range []int{0, 9, 10, 11} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			s := testStore(t)
+			for i := count; i > 0; i-- {
+				p := ownedPost(t, s, i, "same-video", int64(i))
+				voteFor(t, s, p, 1000, 1)
+			}
+			want := min(count, 10)
+			for attempt := 0; attempt < 2; attempt++ {
+				top, err := s.Top(context.Background(), -100)
+				if err != nil || len(top) != want {
+					t.Fatal("incorrect author limit", top, err)
+				}
+				for i, rank := range top {
+					if rank.UserID != int64(i+1) {
+						t.Fatal("incorrect tie order", top)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTopUsesWilsonScoreBeforeRounding(t *testing.T) {
 	type postVotes struct {
 		owner         int64
 		cringe, total int
@@ -244,7 +269,7 @@ func TestTopUsesWilsonScoreBeforeRoundingAndLimitsToThree(t *testing.T) {
 		{"sample size can outweigh slightly higher share", []postVotes{{10, 31, 50}, {50, 23, 37}}, []int64{10, 50}, []float64{62, 2300.0 / 37}},
 		{"unrounded Wilson score before vote count", []postVotes{{10, 13, 39}, {50, 1, 1}}, []int64{50, 10}, []float64{100, 100.0 / 3}},
 		{"Wilson before absolute likes", []postVotes{{10, 3, 4}, {50, 2, 2}}, []int64{50, 10}, []float64{100, 75}},
-		{"ties by vote count and user ID", []postVotes{{20, 0, 2}, {10, 0, 2}, {30, 0, 4}, {40, 0, 2}}, []int64{30, 10, 20}, []float64{0, 0, 0}},
+		{"ties by vote count and user ID", []postVotes{{20, 0, 2}, {10, 0, 2}, {30, 0, 4}, {40, 0, 2}}, []int64{30, 10, 20, 40}, []float64{0, 0, 0, 0}},
 		{"zero percent but no empty vote pool", []postVotes{{10, 0, 0}, {50, 0, 1}}, []int64{50}, []float64{0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -330,7 +355,7 @@ func TestUserRankingSeparatesAuthorsDeduplicatesFilesAndBreaksTies(t *testing.T)
 		voteFor(t, s, p, 999, 1)
 	}
 	top, err = s.Top(ctx, -100)
-	if err != nil || len(top) != 3 || top[0].UserID != 10 || top[1].UserID != 50 || top[2].UserID != 6 {
+	if err != nil || len(top) != 5 || top[0].UserID != 10 || top[1].UserID != 50 || top[2].UserID != 6 || top[3].UserID != 7 || top[4].UserID != 8 {
 		t.Fatal(top, err)
 	}
 	top, err = s.Top(ctx, -200)
